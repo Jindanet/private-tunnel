@@ -71,6 +71,7 @@ h1 span{color:#e0e0e0}
     <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     GitHub
   </a>
+  <a href="https://github.com/Jindanet/private-tunnel/releases" target="_blank">Downloads</a>
   <a href="/dashboard">Dashboard</a>
 </div>
 
@@ -120,6 +121,10 @@ h1 span{color:#e0e0e0}
     <p>TCP tunnel ports are automatically opened in the OS firewall when a client connects and closed when they disconnect. Supports Windows (<code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">netsh</code>) and Linux (<code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">ufw</code>/<code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">iptables</code>).</p>
   </div>
   <div class="feature">
+    <h3>Desktop App</h3>
+    <p>Electron-based GUI for non-developers. One-click tunnels, port presets, live request log, and system tray. No terminal required. Available for Windows, Linux &amp; macOS.</p>
+  </div>
+  <div class="feature">
     <h3>Minimal Dependencies</h3>
     <p>Only <code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">ws</code> and <code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">better-sqlite3</code>. Everything else uses Node.js built-ins.</p>
   </div>
@@ -167,6 +172,25 @@ h1 span{color:#e0e0e0}
   <div class="step-num">4. Connect Client</div>
   <p style="color:#888;font-size:14px">Run on your local machine (server URL is saved after first use)</p>
   <code>ptunnel http 3000 --server wss://your-domain.com/ws<br>ptunnel tcp 25565 --server wss://your-domain.com/ws</code>
+</div>
+</div>
+
+<div class="setup" style="margin-bottom:48px">
+<h2>Download</h2>
+<p style="color:#888;font-size:14px;margin-bottom:16px">Pre-built binaries are available on <a href="https://github.com/Jindanet/private-tunnel/releases" target="_blank" style="color:#00d4aa">GitHub Releases</a>.</p>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+  <a href="https://github.com/Jindanet/private-tunnel/releases" target="_blank" style="text-decoration:none">
+    <div class="feature" style="cursor:pointer;transition:border-color .2s" onmouseover="this.style.borderColor='#00d4aa'" onmouseout="this.style.borderColor='#333'">
+      <h3>🖥️ Desktop App (Windows)</h3>
+      <p>PrivateTunnel-win.zip — Electron GUI. One-click tunnels, port presets, system tray.</p>
+    </div>
+  </a>
+  <a href="https://github.com/Jindanet/private-tunnel/releases" target="_blank" style="text-decoration:none">
+    <div class="feature" style="cursor:pointer;transition:border-color .2s" onmouseover="this.style.borderColor='#00d4aa'" onmouseout="this.style.borderColor='#333'">
+      <h3>⌨️ CLI Binaries</h3>
+      <p>ptunnel-win.exe, ptunnel-linux, ptunnel-macos — Standalone CLI. No Node.js required.</p>
+    </div>
+  </a>
 </div>
 </div>
 

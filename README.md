@@ -28,6 +28,7 @@ $ ptunnel tcp 25565
 - [Server Setup](#server-setup)
 - [Client Usage](#client-usage)
 - [Pre-built Binaries](#pre-built-binaries)
+- [Desktop App](#desktop-app)
 - [Dashboard](#dashboard)
 - [DNS & SSL Configuration](#dns--ssl-configuration)
 - [Nginx Configuration](#nginx-configuration)
@@ -98,7 +99,7 @@ TCP tunnels bypass Nginx entirely and connect directly to the allocated port. Th
 
 ```
 PrivateTunnel/
-├── package.json              # Dependencies: ws, better-sqlite3
+├── package.json              # Dependencies + Electron build config
 ├── .gitignore
 ├── README.md
 │
@@ -120,6 +121,14 @@ PrivateTunnel/
 │   ├── tunnel-client.js      # WebSocket client + HTTP/TCP multiplexer
 │   ├── local-forwarder.js    # Forwards HTTP requests to localhost:PORT
 │   └── ui.js                 # Terminal UI (ANSI escape codes)
+│
+├── app/                      # Electron desktop app
+│   ├── main.js               # Main process — window, tray, IPC handlers
+│   ├── preload.js            # Context bridge — safe renderer API
+│   └── renderer/
+│       ├── index.html        # App shell
+│       ├── style.css         # Dark theme UI
+│       └── app.js            # UI logic — tunnels, presets, guide
 │
 └── data/
     └── tunnel.db             # SQLite database (auto-created, gitignored)
@@ -237,7 +246,7 @@ On first run, a unique `clientId` (UUID) is generated and saved to `~/.ptunnel`.
 
 ## Pre-built Binaries
 
-Build standalone executables (no Node.js required on client):
+Build standalone CLI executables (no Node.js required on client):
 
 ```bash
 npm run build          # All platforms
@@ -252,6 +261,49 @@ Usage on Linux/macOS:
 chmod +x ptunnel-linux
 ./ptunnel-linux http 3000 --server wss://your-domain.com/ws
 ```
+
+> Pre-built binaries are distributed via [GitHub Releases](https://github.com/Jindanet/private-tunnel/releases).
+
+---
+
+## Desktop App
+
+PrivateTunnel includes an Electron-based desktop GUI for non-developer users — no terminal required.
+
+![Desktop App](https://raw.githubusercontent.com/Jindanet/private-tunnel/main/app/renderer/preview.png)
+
+### Features
+
+- **One-click tunnels** — Start/stop HTTP and TCP tunnels with a single click
+- **Port presets** — Built-in suggestions for common services (Minecraft, Vite, React, SSH, MySQL...)
+- **Persistent config** — Tunnels are saved and restored on next launch
+- **Live request log** — See incoming requests in real-time per tunnel
+- **System tray** — Minimizes to tray, stays running in the background
+- **Setup guide** — Step-by-step instructions for Website, Game Server, and SSH use cases
+
+### Build Desktop App
+
+```bash
+npm run build:app:win    # Windows → dist-app/win-unpacked/PrivateTunnel.exe
+npm run build:app:linux  # Linux   → dist-app/*.AppImage
+npm run build:app:mac    # macOS   → dist-app/*.dmg
+```
+
+> **Windows build note:** Requires Developer Mode enabled (Settings → System → For Developers → Developer Mode ON) to allow symlink creation during packaging.
+
+### Project Structure (App)
+
+```
+app/
+├── main.js          # Electron main process — IPC, tray, window lifecycle
+├── preload.js       # Context bridge — exposes safe API to renderer
+└── renderer/
+    ├── index.html   # App shell — views, panels, guide tabs
+    ├── style.css    # Dark theme UI styles
+    └── app.js       # UI logic — tunnel cards, presets, status handling
+```
+
+> Desktop app downloads are available in [GitHub Releases](https://github.com/Jindanet/private-tunnel/releases).
 
 ---
 

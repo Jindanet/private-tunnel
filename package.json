@@ -2,22 +2,80 @@
   "name": "privatetunnel",
   "version": "1.0.0",
   "description": "ngrok-like tunnel system - expose local servers to the internet",
+  "author": "Jindanet",
   "private": true,
   "bin": {
     "ptunnel": "./client/bin/ptunnel.js"
   },
+  "main": "app/main.js",
   "scripts": {
     "server": "node server/index.js",
     "client": "node client/bin/ptunnel.js",
+    "app": "electron .",
     "build": "npm run build:win && npm run build:linux && npm run build:macos",
     "build:win": "pkg client/bin/ptunnel.js --targets node22-win-x64 --output dist/ptunnel-win.exe",
     "build:linux": "pkg client/bin/ptunnel.js --targets node22-linux-x64 --output dist/ptunnel-linux",
     "build:macos": "pkg client/bin/ptunnel.js --targets node22-macos-x64 --output dist/ptunnel-macos",
-    "build:macos-arm": "pkg client/bin/ptunnel.js --targets node22-macos-arm64 --output dist/ptunnel-macos-arm64"
+    "build:macos-arm": "pkg client/bin/ptunnel.js --targets node22-macos-arm64 --output dist/ptunnel-macos-arm64",
+    "build:app": "electron-builder --win --linux --mac",
+    "build:app:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
+    "build:app:linux": "electron-builder --linux",
+    "build:app:mac": "electron-builder --mac"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "dotenv": "^17.3.1",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.jindanet.privatetunnel",
+    "productName": "PrivateTunnel",
+    "files": [
+      "app/**/*",
+      "client/tunnel-client.js",
+      "client/local-forwarder.js",
+      "shared/protocol.js",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist-app"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    }
   }
 }

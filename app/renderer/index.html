@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PrivateTunnel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ═══════════════════════════ -->
+  <!-- VIEW: SETUP                 -->
+  <!-- ═══════════════════════════ -->
+  <div class="view" id="view-setup">
+    <div class="setup-wrap">
+      <div class="logo-block">
+        <div class="logo-glow">⚡</div>
+        <h1 class="logo-text"><span>Private</span>Tunnel</h1>
+        <p class="logo-sub">Expose localhost to the internet</p>
+      </div>
+      <div class="setup-form">
+        <label class="field-label">Server WebSocket URL</label>
+        <input id="setup-url" class="field-input" type="text"
+          placeholder="wss://your-server.com/ws" autocomplete="off" spellcheck="false">
+        <p class="field-hint">Get this URL from your server admin</p>
+        <button class="btn-primary full" id="setup-connect-btn">Connect →</button>
+      </div>
+      <button class="btn-link" id="setup-guide-btn">❓ How to get started</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ -->
+  <!-- VIEW: MAIN                  -->
+  <!-- ═══════════════════════════ -->
+  <div class="view hidden" id="view-main">
+    <div class="header">
+      <div class="header-brand">
+        <div class="brand-dot" id="header-dot"></div>
+        <span class="brand-name">PrivateTunnel</span>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="guide-btn" title="How to use">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="settings-btn" title="Settings">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="server-bar">
+      <span class="server-label">SERVER</span>
+      <span class="server-url" id="server-url-text">—</span>
+    </div>
+
+    <div class="tunnel-list" id="tunnel-list">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">🔌</div>
+        <p class="empty-title">No tunnels yet</p>
+        <p class="empty-hint">Tap "Add Tunnel" to expose a local port</p>
+      </div>
+    </div>
+
+    <div class="bottom-bar">
+      <button class="btn-add-tunnel" id="add-tunnel-btn">＋ Add Tunnel</button>
+    </div>
+  </div>
+
+  <!-- BACKDROP -->
+  <div class="backdrop hidden" id="backdrop"></div>
+
+  <!-- ═══════════════════════════ -->
+  <!-- PANEL: ADD TUNNEL (bottom)  -->
+  <!-- ═══════════════════════════ -->
+  <div class="panel panel-bottom" id="panel-add">
+    <div class="drag-handle"></div>
+    <h2 class="panel-title">Add Tunnel</h2>
+
+    <div class="type-grid">
+      <button class="type-card active" data-type="http">
+        <span class="type-icon">🌐</span>
+        <span class="type-name">HTTP</span>
+        <span class="type-desc">Website / API</span>
+      </button>
+      <button class="type-card" data-type="tcp">
+        <span class="type-icon">🔌</span>
+        <span class="type-name">TCP</span>
+        <span class="type-desc">Game / SSH / DB</span>
+      </button>
+    </div>
+
+    <!-- Quick presets -->
+    <div class="presets" id="presets">
+      <!-- injected by JS based on selected type -->
+    </div>
+
+    <div class="form-row">
+      <div class="form-col">
+        <label class="field-label">Port</label>
+        <input id="add-port" class="field-input" type="number" placeholder="e.g. 3000" min="1" max="65535">
+      </div>
+      <div class="form-col">
+        <label class="field-label">Name <span class="opt">(optional)</span></label>
+        <input id="add-name" class="field-input" type="text" placeholder="My Website">
+      </div>
+    </div>
+
+    <div class="panel-actions">
+      <button class="btn-ghost" id="cancel-add-btn">Cancel</button>
+      <button class="btn-primary" id="confirm-add-btn">Add &amp; Start</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ -->
+  <!-- PANEL: GUIDE (right)        -->
+  <!-- ═══════════════════════════ -->
+  <div class="panel panel-right" id="panel-guide">
+    <div class="panel-header">
+      <h2 class="panel-title">How to Use</h2>
+      <button class="close-btn" id="close-guide-btn">✕</button>
+    </div>
+    <div class="guide-tabs">
+      <button class="g-tab active" data-g="website">🌐 Website</button>
+      <button class="g-tab" data-g="game">🎮 Game</button>
+      <button class="g-tab" data-g="ssh">🔑 SSH</button>
+    </div>
+    <div class="guide-body" id="guide-body"></div>
+  </div>
+
+  <!-- ═══════════════════════════ -->
+  <!-- PANEL: SETTINGS (right)     -->
+  <!-- ═══════════════════════════ -->
+  <div class="panel panel-right" id="panel-settings">
+    <div class="panel-header">
+      <h2 class="panel-title">Settings</h2>
+      <button class="close-btn" id="close-settings-btn">✕</button>
+    </div>
+    <div class="settings-body">
+      <label class="field-label">Server WebSocket URL</label>
+      <input id="settings-url" class="field-input" type="text"
+        placeholder="wss://your-server.com/ws" spellcheck="false">
+      <p class="field-hint">Saved automatically to ~/.ptunnel</p>
+      <button class="btn-primary full" id="save-settings-btn">Save</button>
+      <div class="settings-footer">PrivateTunnel v1.0.0</div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div class="toast" id="toast"></div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

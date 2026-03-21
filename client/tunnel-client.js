@@ -66,9 +66,8 @@ class TunnelClient {
 
     this.ws.on('close', () => {
       this.connected = false;
-      this.onDisconnected();
-
       if (this.shouldReconnect) {
+        this.onDisconnected();
         this._reconnect();
       }
     });

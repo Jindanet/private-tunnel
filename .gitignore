@@ -11,3 +11,7 @@ Thumbs.db
 .playwright-mcp/
 *.log
 logs/
+
+# Build outputs (distributed via GitHub Releases)
+dist/
+dist-app/
