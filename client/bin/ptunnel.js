@@ -39,9 +39,14 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   ptunnel - Expose local servers to the internet
 
   Usage:
-    ptunnel <target>                    Tunnel to a local service
-    ptunnel localhost:3000              Tunnel port 3000
-    ptunnel 8080                        Shorthand for localhost:8080
+    ptunnel http <port>                 HTTP tunnel  → https://{id}.domain
+    ptunnel tcp  <port>                 TCP tunnel   → domain:PORT
+    ptunnel <port>                      Shorthand for http tunnel
+
+  Examples:
+    ptunnel http 3000
+    ptunnel tcp 25565
+    ptunnel 8080
 
   Options:
     --server <url>    Server WebSocket URL (saved to ~/.ptunnel after first use)
@@ -50,13 +55,22 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   process.exit(0);
 }
 
-// Parse target
+// Parse tunnel type and target
 let localHost = 'localhost';
 let localPort;
+let tunnelType = 'http';
 
-const target = args.find(a => !a.startsWith('--'));
+const positional = args.filter(a => !a.startsWith('--'));
+
+// Check if first positional arg is a type keyword
+if (positional[0] === 'tcp' || positional[0] === 'http') {
+  tunnelType = positional[0];
+  positional.shift();
+}
+
+const target = positional[0];
 if (!target) {
-  console.error('Error: Please specify a target (e.g., localhost:3000 or 8080)');
+  console.error('Error: Please specify a port (e.g., ptunnel http 3000 or ptunnel tcp 25565)');
   process.exit(1);
 }
 
@@ -100,8 +114,9 @@ const client = new TunnelClient({
   localHost,
   localPort,
   clientId,
-  onConnected: ({ subdomain, url }) => {
-    ui.setConnected(url, `${localHost}:${localPort}`);
+  tunnelType,
+  onConnected: ({ subdomain, url, tunnelType: type }) => {
+    ui.setConnected(url, `${localHost}:${localPort}`, type);
   },
   onDisconnected: () => {
     ui.setDisconnected();

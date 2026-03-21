@@ -5,6 +5,9 @@ const TunnelManager = require('./tunnel-manager');
 const { handleProxy } = require('./proxy');
 const { createDashboard } = require('./dashboard');
 const { getLandingHTML } = require('./landing');
+const { warnIfNotElevated } = require('./firewall');
+
+warnIfNotElevated();
 
 const WS_PORT = process.env.WS_PORT || 8080;
 const DASHBOARD_PORT = process.env.DASHBOARD_PORT || 8081;

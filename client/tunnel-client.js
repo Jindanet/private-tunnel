@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
+const net = require('node:net');
 const os = require('node:os');
-const { MSG, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, decodeDataFrame, sendControl, sendData } = require('../shared/protocol');
+const { MSG, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, decodeDataFrame, sendControl, sendData } = require('../shared/protocol');
 const { forwardRequest } = require('./local-forwarder');
 
 class TunnelClient {
@@ -9,6 +10,7 @@ class TunnelClient {
     this.localHost = options.localHost || 'localhost';
     this.localPort = options.localPort;
     this.clientId = options.clientId || null;
+    this.tunnelType = options.tunnelType || 'http';
     this.ws = null;
     this.subdomain = null;
     this.url = null;
@@ -23,9 +25,12 @@ class TunnelClient {
     this.onRequest = options.onRequest || (() => {});
     this.onError = options.onError || (() => {});
 
-    // Track incoming request bodies and metadata
-    this.requestBodies = new Map(); // requestId -> Buffer[]
-    this._pendingRequests = new Map(); // requestId -> { method, path, headers }
+    // HTTP: track incoming request bodies and metadata
+    this.requestBodies = new Map();
+    this._pendingRequests = new Map();
+
+    // TCP: connId -> net.Socket
+    this.tcpSockets = new Map();
   }
 
   connect() {
@@ -38,6 +43,7 @@ class TunnelClient {
       // Request a tunnel
       sendControl(this.ws, {
         type: MSG.TUNNEL_OPEN,
+        tunnelType: this.tunnelType,
         localPort: this.localPort,
         clientId: this.clientId,
         hostname: os.hostname(),
@@ -77,7 +83,15 @@ class TunnelClient {
       case MSG.TUNNEL_ASSIGNED:
         this.subdomain = msg.subdomain;
         this.url = msg.url;
-        this.onConnected({ subdomain: msg.subdomain, url: msg.url });
+        this.onConnected({ subdomain: msg.subdomain, url: msg.url, tunnelType: msg.tunnelType });
+        break;
+
+      case MSG.TCP_CONNECT:
+        this._handleTcpConnect(msg.connId);
+        break;
+
+      case MSG.TCP_CLOSE:
+        this._handleTcpClose(msg.connId);
         break;
 
       case MSG.REQUEST_START:
@@ -108,6 +122,49 @@ class TunnelClient {
         this.requestBodies.set(frame.requestId, []);
       }
       this.requestBodies.get(frame.requestId).push(frame.data);
+    } else if (frame.frameType === FRAME_TCP_DATA) {
+      const sock = this.tcpSockets.get(frame.requestId);
+      if (sock && !sock.destroyed) {
+        sock.write(frame.data);
+      }
+    }
+  }
+
+  _handleTcpConnect(connId) {
+    const sock = net.createConnection({ host: this.localHost, port: this.localPort });
+    this.tcpSockets.set(connId, sock);
+    this.onRequest({ method: 'TCP', path: `→ localhost:${this.localPort}`, statusCode: 0, latency: 0 });
+
+    sock.on('data', (chunk) => {
+      if (this.ws && this.ws.readyState === this.ws.OPEN) {
+        sendData(this.ws, FRAME_TCP_DATA, connId, chunk);
+      }
+    });
+
+    sock.on('close', () => {
+      this.tcpSockets.delete(connId);
+      if (this.ws && this.ws.readyState === this.ws.OPEN) {
+        sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
+      }
+    });
+
+    sock.on('connect', () => {
+      this.onRequest({ method: 'TCP', path: `connected → localhost:${this.localPort}`, statusCode: 200, latency: 0 });
+    });
+
+    sock.on('error', (err) => {
+      this.tcpSockets.delete(connId);
+      if (this.ws && this.ws.readyState === this.ws.OPEN) {
+        sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
+      }
+    });
+  }
+
+  _handleTcpClose(connId) {
+    const sock = this.tcpSockets.get(connId);
+    if (sock) {
+      sock.destroy();
+      this.tcpSockets.delete(connId);
     }
   }
 
@@ -216,6 +273,10 @@ class TunnelClient {
 
   disconnect() {
     this.shouldReconnect = false;
+    for (const [, sock] of this.tcpSockets) {
+      sock.destroy();
+    }
+    this.tcpSockets.clear();
     if (this.ws) {
       sendControl(this.ws, { type: MSG.TUNNEL_CLOSE });
       this.ws.close();

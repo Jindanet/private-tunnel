@@ -9,6 +9,8 @@ const MSG = {
   RESPONSE_START: 'response:start',
   STREAM_END: 'stream:end',
   STREAM_ERROR: 'stream:error',
+  TCP_CONNECT: 'tcp:connect',
+  TCP_CLOSE: 'tcp:close',
   PING: 'ping',
   PONG: 'pong',
 };
@@ -16,6 +18,7 @@ const MSG = {
 // Binary frame types
 const FRAME_REQUEST_BODY = 0x01;
 const FRAME_RESPONSE_BODY = 0x02;
+const FRAME_TCP_DATA = 0x03;
 
 function generateRequestId() {
   return crypto.randomUUID();
@@ -57,6 +60,7 @@ module.exports = {
   MSG,
   FRAME_REQUEST_BODY,
   FRAME_RESPONSE_BODY,
+  FRAME_TCP_DATA,
   generateRequestId,
   uuidToBytes,
   bytesToUuid,

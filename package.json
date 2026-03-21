@@ -8,7 +8,12 @@
   },
   "scripts": {
     "server": "node server/index.js",
-    "client": "node client/bin/ptunnel.js"
+    "client": "node client/bin/ptunnel.js",
+    "build": "npm run build:win && npm run build:linux && npm run build:macos",
+    "build:win": "pkg client/bin/ptunnel.js --targets node22-win-x64 --output dist/ptunnel-win.exe",
+    "build:linux": "pkg client/bin/ptunnel.js --targets node22-linux-x64 --output dist/ptunnel-linux",
+    "build:macos": "pkg client/bin/ptunnel.js --targets node22-macos-x64 --output dist/ptunnel-macos",
+    "build:macos-arm": "pkg client/bin/ptunnel.js --targets node22-macos-arm64 --output dist/ptunnel-macos-arm64"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

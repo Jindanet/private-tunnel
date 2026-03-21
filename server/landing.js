@@ -63,7 +63,7 @@ h1 span{color:#e0e0e0}
 <h1><span>Private</span>Tunnel</h1>
 <p class="tagline">
   Expose your <em>localhost</em> to the internet with a single command.<br>
-  Open-source, self-hosted, zero dependencies beyond Node.js.
+  HTTP tunnels, raw TCP tunnels, real-time dashboard. Self-hosted, open-source.
 </p>
 
 <div class="nav">
@@ -82,28 +82,30 @@ h1 span{color:#e0e0e0}
     <div class="terminal-title">Terminal</div>
   </div>
   <div class="terminal-body">
-<span class="prompt">$</span> <span class="cmd">ptunnel localhost:3000</span><br>
-<br>
+<span class="prompt">$</span> <span class="cmd">ptunnel http 3000</span><br>
 <span class="output">  <b style="color:#00d4aa">Private Tunnel</b>   (Ctrl+C to quit)</span><br>
 <span class="output">  ────────────────────────────────────────────</span><br>
 <span class="output">  Status:      <span class="status-online">● online</span></span><br>
 <span class="output">  Forwarding:  <span class="url-highlight">https://a7f3bc01.${domain}</span> → localhost:3000</span><br>
-<span class="output">  Connections: 0</span><br>
 <span class="output">  ────────────────────────────────────────────</span><br>
-<span class="output">  METHOD  PATH                      STATUS   TIME</span><br>
+<br>
+<span class="prompt">$</span> <span class="cmd">ptunnel tcp 25565</span><br>
+<span class="output">  <b style="color:#00d4aa">Private Tunnel</b>   (Ctrl+C to quit)</span><br>
 <span class="output">  ────────────────────────────────────────────</span><br>
-<span class="output">  Waiting for connections...</span>
+<span class="output">  Status:      <span class="status-online">● online</span></span><br>
+<span class="output">  Forwarding:  <span style="color:#ffbd2e">[TCP]</span> <span class="url-highlight">${domain}:30001</span> → localhost:25565</span><br>
+<span class="output">  ────────────────────────────────────────────</span>
   </div>
 </div>
 
 <div class="features">
   <div class="feature">
-    <h3>One Command</h3>
-    <p>Run <code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">ptunnel 3000</code> and instantly get a public URL. No signup, no config files.</p>
+    <h3>HTTP &amp; TCP Tunnels</h3>
+    <p><code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">ptunnel http 3000</code> for web apps. <code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">ptunnel tcp 25565</code> for game servers, SSH, databases — any raw TCP service.</p>
   </div>
   <div class="feature">
     <h3>Persistent Subdomains</h3>
-    <p>Each client gets a unique subdomain that persists across reconnects. Your URL stays the same.</p>
+    <p>Each client gets a unique subdomain that persists across reconnects. Your URL stays the same every time.</p>
   </div>
   <div class="feature">
     <h3>Real-time Dashboard</h3>
@@ -111,11 +113,11 @@ h1 span{color:#e0e0e0}
   </div>
   <div class="feature">
     <h3>Self-hosted</h3>
-    <p>Run on your own server. Full control over your data. No third-party dependencies. Works on Windows & Linux.</p>
+    <p>Run on your own server. Full control over your data. Works on Windows, Linux & macOS.</p>
   </div>
   <div class="feature">
-    <h3>WebSocket Multiplexing</h3>
-    <p>Single WebSocket connection per client. Multiple concurrent HTTP requests multiplexed via request IDs.</p>
+    <h3>Auto Firewall</h3>
+    <p>TCP tunnel ports are automatically opened in the OS firewall when a client connects and closed when they disconnect. Supports Windows (<code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">netsh</code>) and Linux (<code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">ufw</code>/<code style="background:#0a0a0a;padding:2px 6px;border-radius:3px">iptables</code>).</p>
   </div>
   <div class="feature">
     <h3>Minimal Dependencies</h3>
@@ -163,8 +165,8 @@ h1 span{color:#e0e0e0}
 </div>
 <div class="step">
   <div class="step-num">4. Connect Client</div>
-  <p style="color:#888;font-size:14px">Run on your local machine</p>
-  <code>ptunnel localhost:3000 --server wss://your-domain.com/ws</code>
+  <p style="color:#888;font-size:14px">Run on your local machine (server URL is saved after first use)</p>
+  <code>ptunnel http 3000 --server wss://your-domain.com/ws<br>ptunnel tcp 25565 --server wss://your-domain.com/ws</code>
 </div>
 </div>
 

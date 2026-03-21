@@ -1,14 +1,21 @@
 # PrivateTunnel
 
-**Self-hosted ngrok alternative** — Expose your localhost to the internet with a single command.
+**Self-hosted ngrok alternative** — Expose your localhost to the internet with a single command. Supports both HTTP and raw TCP tunneling.
 
 ```bash
-$ ptunnel localhost:3000
+# HTTP tunnel → https://{id}.your-domain.com
+$ ptunnel http 3000
 
   PrivateTunnel   (Ctrl+C to quit)
   ────────────────────────────────────────────
   Status:      ● online
   Forwarding:  https://a7f3bc01.ex.example.com → localhost:3000
+
+# TCP tunnel (Minecraft, SSH, game servers, etc.)
+$ ptunnel tcp 25565
+
+  Status:      ● online
+  Forwarding:  [TCP] ex.example.com:30001 → localhost:25565
 ```
 
 ## Table of Contents
@@ -20,6 +27,7 @@ $ ptunnel localhost:3000
 - [Installation](#installation)
 - [Server Setup](#server-setup)
 - [Client Usage](#client-usage)
+- [Pre-built Binaries](#pre-built-binaries)
 - [Dashboard](#dashboard)
 - [DNS & SSL Configuration](#dns--ssl-configuration)
 - [Nginx Configuration](#nginx-configuration)
@@ -34,17 +42,18 @@ $ ptunnel localhost:3000
 
 We needed a self-hosted tunnel solution similar to ngrok for exposing local development servers to the internet. The requirements were:
 
-1. **Client runs a single command** (`ptunnel localhost:3000`) and gets a unique public URL
+1. **Client runs a single command** (`ptunnel http 3000` or `ptunnel tcp 25565`) and gets a unique public URL
 2. **Each client gets a persistent subdomain** — reconnecting gives the same URL
 3. **Server manages everything** — no port forwarding, no manual configuration
 4. **Real-time dashboard** with authentication to monitor all tunnels and requests
 5. **Minimal dependencies** — only Node.js built-ins + `ws` + `better-sqlite3`
-
-The system is deployed at **ex.example.com** with wildcard subdomains (`*.ex.example.com`), so each tunnel client gets a URL like `https://a7f3bc01.ex.example.com`.
+6. **TCP tunneling** — raw TCP for game servers, SSH, databases, etc. with auto firewall management
 
 ---
 
 ## Architecture
+
+### HTTP Tunnels
 
 ```
 Browser ──HTTPS──> Nginx (SSL termination, wildcard *.ex.example.com)
@@ -67,17 +76,21 @@ Browser ──HTTPS──> Nginx (SSL termination, wildcard *.ex.example.com)
                     localhost:3000
 ```
 
-### Data Flow
+### TCP Tunnels
 
-1. Browser visits `https://abc123.ex.example.com/some/path`
-2. Nginx terminates SSL, forwards to port 8082
-3. Server extracts subdomain `abc123` from Host header
-4. Server finds the WebSocket connection for that subdomain
-5. Server serializes the HTTP request and sends it through WebSocket
-6. Client receives the request, forwards it to `localhost:3000`
-7. Local service responds
-8. Client sends response back through WebSocket
-9. Server writes the response back to the browser
+```
+TCP Client ──> Server:30001 (direct, bypasses Nginx)
+                    │
+              net.Server on allocated port
+                    │
+              WebSocket (same connection, FRAME_TCP_DATA frames)
+                    │
+              Client (ptunnel)
+                    │
+              localhost:25565
+```
+
+TCP tunnels bypass Nginx entirely and connect directly to the allocated port. The server auto-manages firewall rules when run with admin/root privileges.
 
 ---
 
@@ -98,13 +111,14 @@ PrivateTunnel/
 │   ├── subdomain.js          # Random 8-char hex subdomain generation
 │   ├── proxy.js              # HTTP-to-WebSocket proxy — forwards browser requests
 │   ├── dashboard.js          # Dashboard API + Web UI with authentication
-│   ├── landing.js            # Landing page for ex.example.com
+│   ├── landing.js            # Landing page for the root domain
+│   ├── firewall.js           # Auto firewall open/close (Windows/Linux)
 │   └── db.js                 # SQLite database — clients, request logs, config
 │
 ├── client/
 │   ├── bin/ptunnel.js        # CLI entry point (#!/usr/bin/env node)
-│   ├── tunnel-client.js      # WebSocket client + request multiplexer
-│   ├── local-forwarder.js    # Forwards requests to localhost:PORT
+│   ├── tunnel-client.js      # WebSocket client + HTTP/TCP multiplexer
+│   ├── local-forwarder.js    # Forwards HTTP requests to localhost:PORT
 │   └── ui.js                 # Terminal UI (ANSI escape codes)
 │
 └── data/
@@ -117,7 +131,7 @@ PrivateTunnel/
 
 - **Node.js** 18+ (tested on v22)
 - **npm**
-- **Nginx** (on server, for SSL termination and routing)
+- **Nginx** (on server, for SSL termination and HTTP routing)
 - A **domain** with wildcard DNS (e.g., `*.ex.example.com`)
 - **SSL certificate** covering the wildcard domain
 
@@ -137,8 +151,6 @@ npm install
 npm link
 ```
 
-Now you can use `ptunnel` from anywhere.
-
 ---
 
 ## Server Setup
@@ -146,16 +158,32 @@ Now you can use `ptunnel` from anywhere.
 ### Start the server
 
 ```bash
+# Normal
 node server/index.js
+
+# With auto firewall management for TCP tunnels (recommended)
+# Windows: Run as Administrator
+# Linux/macOS:
+sudo node server/index.js
 ```
 
-This starts 3 services:
+If the server is not running with admin/root privileges, a warning is shown at startup:
+```
+[Firewall] WARNING: Not running as admin/root — TCP firewall rules will NOT be added automatically.
+[Firewall]          To enable auto firewall: Run as Administrator
+```
 
-| Port | Service | Description |
-|------|---------|-------------|
-| 8080 | WebSocket Server | Tunnel client connections (`/ws`) |
-| 8081 | Dashboard Server | Admin UI (`/dashboard`) + API (`/api/*`) |
-| 8082 | HTTP Proxy | Tunnel traffic — routes `*.ex.example.com` requests |
+TCP tunnels still work without admin, but you must open the port range manually.
+
+### Using PM2 (recommended for production)
+
+```bash
+npm install -g pm2
+# Run as Administrator (Windows) or root (Linux)
+pm2 start server/index.js --name ptunnel
+pm2 save
+pm2 startup   # Auto-start on boot
+```
 
 ### Environment Variables
 
@@ -164,22 +192,34 @@ This starts 3 services:
 | `WS_PORT` | `8080` | WebSocket server port |
 | `DASHBOARD_PORT` | `8081` | Dashboard server port |
 | `PROXY_PORT` | `8082` | HTTP proxy port |
-| `DOMAIN` | `ex.example.com` | Base domain |
+| `DOMAIN` | *(required)* | Base domain (e.g. `ex.example.com`) |
+| `DASHBOARD_PASSWORD` | `AdminTunnel1234` | Dashboard login password |
 | `DB_PATH` | `./data/tunnel.db` | SQLite database path |
+| `TCP_PORT_MIN` | `30000` | Start of TCP tunnel port range |
+| `TCP_PORT_MAX` | `40000` | End of TCP tunnel port range |
 
 ---
 
 ## Client Usage
 
 ```bash
-# Basic — tunnel port 3000
-ptunnel localhost:3000
+# HTTP tunnel → https://{id}.your-domain.com
+ptunnel http 3000
+ptunnel http localhost:3000
 
-# Shorthand
+# TCP tunnel → your-domain.com:PORT
+ptunnel tcp 25565      # Minecraft
+ptunnel tcp 22         # SSH
+ptunnel tcp 3306       # MySQL
+
+# Shorthand (defaults to HTTP)
 ptunnel 3000
 
-# Custom server URL (for development/testing)
-ptunnel 3000 --server ws://localhost:8080/ws
+# First run — save server URL
+ptunnel http 3000 --server wss://your-domain.com/ws
+
+# Subsequent runs — URL is remembered
+ptunnel http 3000
 
 # Help
 ptunnel --help
@@ -187,36 +227,76 @@ ptunnel --help
 
 ### Client Identity
 
-On first run, a unique `clientId` (UUID) is generated and saved to `~/.ptunnel`. This ID is sent to the server on every connection, ensuring the same subdomain is assigned each time.
+On first run, a unique `clientId` (UUID) is generated and saved to `~/.ptunnel`. This ensures the same subdomain is assigned on reconnect.
 
+```json
+~/.ptunnel → {"clientId": "a1b2c3d4-...", "serverUrl": "wss://your-domain.com/ws"}
 ```
-~/.ptunnel → {"clientId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
+
+---
+
+## Pre-built Binaries
+
+Build standalone executables (no Node.js required on client):
+
+```bash
+npm run build          # All platforms
+npm run build:win      # Windows x64  → dist/ptunnel-win.exe
+npm run build:linux    # Linux x64    → dist/ptunnel-linux
+npm run build:macos    # macOS x64    → dist/ptunnel-macos
+npm run build:macos-arm # macOS ARM64 → dist/ptunnel-macos-arm64 (run on macOS/Linux only)
+```
+
+Usage on Linux/macOS:
+```bash
+chmod +x ptunnel-linux
+./ptunnel-linux http 3000 --server wss://your-domain.com/ws
+```
+
+---
+
+## TCP Firewall Management
+
+When a TCP tunnel is opened, the server automatically:
+1. Finds a free port in `TCP_PORT_MIN`–`TCP_PORT_MAX` (skips ports in use by other processes)
+2. Opens the firewall rule for that port
+3. Closes the firewall rule when the client disconnects
+
+| Platform | Firewall Command |
+|----------|-----------------|
+| Windows | `netsh advfirewall firewall add/delete rule` |
+| Linux | `ufw allow/delete` → fallback `iptables` |
+| macOS | Not needed (app-based firewall) |
+
+**Requires admin/root.** Without it, auto-firewall is skipped and a warning is shown.
+
+Manual firewall (Windows, open range once):
+```powershell
+netsh advfirewall firewall add rule name="PTunnel TCP" dir=in action=allow protocol=TCP localport=30000-40000
 ```
 
 ---
 
 ## Dashboard
 
-Access at `https://ex.example.com/dashboard`
+Access at `https://your-domain.com/dashboard`
 
 ### Authentication
-- Default password: set in `server/db.js` (configurable)
+- Password set via `DASHBOARD_PASSWORD` in `.env`
 - Session-based (cookie, 24-hour TTL)
 
 ### Dashboard Tabs
 
 **Active Tunnels:**
-- Subdomain, Client IP, Hostname, OS, Port
+- Subdomain, Client IP, Hostname, OS, Port, Tunnel type (HTTP/TCP)
 - Request count, Bytes In/Out
-- Recent requests per tunnel (visitor IP, method, path, status, latency, user-agent)
+- Recent requests per tunnel
 
 **Request Logs:**
 - Full history stored in SQLite (auto-cleanup after 7 days)
-- Time, Subdomain, Visitor IP, Method, Path, Status, Latency, User-Agent
 
 **All Clients:**
 - All registered clients (even offline)
-- Client ID, Subdomain, IP, Hostname, OS, Created, Last Seen
 
 ### Dashboard API
 
@@ -242,7 +322,7 @@ We use **Cloudflare** for DNS. The tunnel system requires wildcard subdomains (`
 
 ### The Solution: Let's Encrypt + DNS Only
 
-We use **Let's Encrypt** wildcard certificates with DNS validation, bypassing Cloudflare's SSL entirely.
+Use **Let's Encrypt** wildcard certificates with DNS-01 validation, bypassing Cloudflare's SSL entirely.
 
 #### Step 1: Cloudflare DNS Records (DNS Only / Grey Cloud)
 
@@ -252,11 +332,9 @@ A       iam     168.x.x.x      DNS Only (grey)
 A       *.iam   168.x.x.x      DNS Only (grey)
 ```
 
-**Important:** Both records must be **DNS Only** (grey cloud), not Proxied (orange cloud).
+**Important:** Both records must be **DNS Only** (grey cloud).
 
-#### Step 2: Obtain Wildcard Certificate
-
-On Windows server, we used **[win-acme](https://www.win-acme.com/)** (WACS):
+#### Step 2: Obtain Wildcard Certificate (Windows — win-acme)
 
 ```powershell
 wacs.exe
@@ -275,25 +353,19 @@ Interactive setup:
 10. Additional store: `5` — No
 11. Installation: `3` — No
 
-During validation, win-acme asks you to create TXT records at `_acme-challenge.ex.example.com` in Cloudflare. Two rounds (one for `*.ex.example.com`, one for `ex.example.com`).
+During validation, create TXT records at `_acme-challenge.ex.example.com` in Cloudflare (two rounds).
 
 Output files:
 ```
-ex.example.com-chain.pem      # Full chain (cert + intermediate)
+ex.example.com-chain.pem      # Full chain
 ex.example.com-key.pem        # Private key
-ex.example.com-crt.pem        # Certificate only
-ex.example.com-chain-only.pem # Intermediate only
 ```
-
-**Note:** Certificate auto-renews via Windows Task Scheduler, but manual DNS validation is required each time. For automated renewal, use the Cloudflare DNS plugin for win-acme.
 
 ---
 
 ## Nginx Configuration
 
 ### SSL Configuration (`ssl_tunnel.conf`)
-
-Separate SSL config for the tunnel (other services on the server may use different certificates):
 
 ```nginx
 ssl_certificate     /path/to/nginx/ssl/ex.example.com-chain.pem;
@@ -320,63 +392,49 @@ server {
 
     include /path/to/nginx/conf/ssl_tunnel.conf;
 
-    # WebSocket tunnel connections
     location /ws {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade           $http_upgrade;
         proxy_set_header Connection        "upgrade";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
         proxy_read_timeout  86400;
         proxy_send_timeout  86400;
     }
 
-    # Dashboard API
     location /api/ {
         proxy_pass http://127.0.0.1:8081;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 60s;
     }
 
-    # Dashboard UI
     location /dashboard {
         proxy_pass http://127.0.0.1:8081;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade           $http_upgrade;
         proxy_set_header Connection        $connection_upgrade;
-        proxy_read_timeout 60s;
     }
 
-    # Tunnel traffic (catch-all)
     location / {
         proxy_pass http://127.0.0.1:8082;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade           $http_upgrade;
         proxy_set_header Connection        $connection_upgrade;
-        proxy_connect_timeout  180s;
-        proxy_read_timeout     180s;
         proxy_buffering        off;
         proxy_request_buffering off;
+        proxy_connect_timeout  180s;
+        proxy_read_timeout     180s;
     }
 }
 ```
 
-**Important:** The `map` block for `$connection_upgrade` must be placed **outside** the `server` block (at the `http` level). Without it, nginx will fail with `unknown "connection_upgrade" variable`.
+**Note:** TCP tunnel ports (30000–40000) bypass Nginx entirely — clients connect directly to the server IP.
 
 ---
 
@@ -384,70 +442,51 @@ server {
 
 ### 1. Cloudflare Free Plan — No Wildcard SSL
 
-**Problem:** Cloudflare Free plan does not issue SSL certificates for wildcard subdomains. Visiting `abc123.ex.example.com` returned `ERR_SSL_VERSION_OR_CIPHER_MISMATCH`.
+**Problem:** `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` on wildcard subdomains.
 
-**Tried:**
-- Cloudflare Origin Certificate — only works with Proxied mode (orange cloud)
-- Cloudflare Flexible SSL — conflicts with other services that require Full (Strict) mode
-- DNS Only mode — no SSL at all
-
-**Solution:** Use **Let's Encrypt wildcard certificate** via **win-acme** on Windows server with manual DNS-01 validation. Set DNS records to DNS Only (grey cloud).
+**Solution:** Let's Encrypt wildcard certificate via win-acme with manual DNS-01 validation. DNS records set to DNS Only (grey cloud).
 
 ### 2. Nginx `ssl.conf` Conflict
 
-**Problem:** The tunnel's SSL config conflicted with other services' `ssl.conf` (duplicate `ssl_protocols`, `ssl_ciphers` directives).
+**Problem:** `"ssl_ciphers" directive is duplicate` — tunnel SSL config conflicted with other services.
 
-```
-nginx: [emerg] "ssl_ciphers" directive is duplicate in ssl_tunnel.conf:8
-```
-
-**Solution:** Created a separate `ssl_tunnel.conf` containing **only** the certificate paths. TLS protocols and ciphers are inherited from the main nginx config.
+**Solution:** Created a separate `ssl_tunnel.conf` with only certificate paths. TLS protocols/ciphers inherited from main nginx config.
 
 ### 3. Nginx `$connection_upgrade` Variable Unknown
 
 **Problem:** `nginx -t` failed with `unknown "connection_upgrade" variable`.
 
-**Solution:** The `map` block was missing. It must be defined at the `http` level (outside `server` blocks):
-
-```nginx
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-```
+**Solution:** Add `map` block at the `http` level (outside all `server` blocks).
 
 ### 4. DNS Cache — `DNS_PROBE_FINISHED_NXDOMAIN`
 
-**Problem:** After adding DNS records in Cloudflare, the domain resolved on other machines but not locally.
+**Problem:** DNS resolved on other machines but not locally after Cloudflare update.
 
-**Solution:**
-1. `ipconfig /flushdns`
-2. Change DNS server to Google DNS (`8.8.8.8`)
-3. Use `nslookup ex.example.com 8.8.8.8` to verify resolution via Google DNS
-4. Change system DNS in Windows Settings → Network → DNS
+**Solution:** `ipconfig /flushdns` + change DNS to Google `8.8.8.8`.
 
 ### 5. WebSocket `ws://` vs `wss://`
 
-**Problem:** Client defaulted to `wss://` (SSL) but during testing without SSL, connections failed silently.
+**Problem:** Protocol mismatch caused silent connection failures.
 
-**Solution:** Match the client's default URL to the server's actual protocol. In production with nginx SSL: `wss://ex.example.com/ws`. During local development: `ws://localhost:8080/ws`.
+**Solution:** Use `wss://` in production (behind nginx SSL), `ws://` for local dev.
 
-### 6. Client-Server Architecture — Single Port vs Multi-Port
+### 6. UI Rendering Flat on Windows
 
-**Problem:** Initial design used a single port for everything. The nginx config required separate ports for different services.
+**Problem:** ANSI `\x1b[2J` (clear screen) didn't work on Windows Terminal — all output appeared on one line.
 
-**Solution:** Split into 3 ports:
-- **8080** — WebSocket only (tunnel connections)
-- **8081** — Dashboard (API + Web UI)
-- **8082** — HTTP proxy (tunnel traffic)
-
-Each mapped to a specific nginx `location` block.
+**Solution:** Switched to per-line cursor movement (`MOVE_UP` + `CLEAR_LINE`) and `\r\n` line endings on Windows.
 
 ### 7. SQLite Schema Migration
 
-**Problem:** Adding new columns (IP, hostname, OS) to the `clients` table caused `table clients has no column named ip` error because the old database file still existed.
+**Problem:** `table clients has no column named ip` after schema update.
 
-**Solution:** Delete the old `data/tunnel.db` file and restart the server. The new schema is created automatically.
+**Solution:** Delete `data/tunnel.db` and restart — schema is recreated automatically.
+
+### 8. TCP Firewall on Non-Admin Process
+
+**Problem:** `netsh`/`iptables` fail silently when server runs without admin/root.
+
+**Solution:** Detect elevation at startup and print a clear warning. TCP tunnels still work if firewall rules are pre-configured manually.
 
 ---
 
@@ -459,26 +498,27 @@ All communication happens over a single WebSocket connection per client.
 
 | Type | Direction | Description |
 |------|-----------|-------------|
-| `tunnel:open` | Client → Server | Request a tunnel (includes clientId, hostname, OS) |
-| `tunnel:assigned` | Server → Client | Tunnel created (includes subdomain, URL) |
+| `tunnel:open` | Client → Server | Request a tunnel (includes `tunnelType`, clientId, hostname, OS) |
+| `tunnel:assigned` | Server → Client | Tunnel created (subdomain, URL, tcpPort if TCP) |
 | `tunnel:close` | Client → Server | Graceful disconnect |
 | `request:start` | Server → Client | Incoming HTTP request (method, path, headers) |
 | `response:start` | Client → Server | HTTP response metadata (statusCode, headers) |
 | `stream:end` | Both | Stream complete for a requestId |
 | `stream:error` | Both | Error for a requestId |
+| `tcp:connect` | Server → Client | New TCP connection arrived (connId) |
+| `tcp:close` | Both | TCP connection closed (connId) |
 | `ping` / `pong` | Both | Keepalive (every 30s) |
 
 ### Data Frames (Binary WebSocket frames)
 
 ```
-[1 byte: frame type] [16 bytes: requestId UUID] [N bytes: data chunk]
+[1 byte: frame type] [16 bytes: ID (UUID)] [N bytes: data chunk]
 
 Frame types:
-  0x01 = Request body  (Server → Client)
-  0x02 = Response body (Client → Server)
+  0x01 = HTTP request body   (Server → Client)
+  0x02 = HTTP response body  (Client → Server)
+  0x03 = TCP data            (Both directions, keyed by connId)
 ```
-
-Multiple concurrent HTTP requests are multiplexed over the single WebSocket using `requestId` to route data chunks to the correct transaction.
 
 ---
 
@@ -486,7 +526,7 @@ Multiple concurrent HTTP requests are multiplexed over the single WebSocket usin
 
 SQLite database at `data/tunnel.db`:
 
-### `clients` — Registered tunnel clients
+### `clients`
 | Column | Type | Description |
 |--------|------|-------------|
 | client_id | TEXT PK | UUID from client's `~/.ptunnel` |
@@ -497,29 +537,24 @@ SQLite database at `data/tunnel.db`:
 | created_at | TEXT | First connection time |
 | last_seen | TEXT | Last connection time |
 
-### `request_logs` — HTTP request history
+### `request_logs`
 | Column | Type | Description |
 |--------|------|-------------|
 | subdomain | TEXT | Which tunnel |
 | visitor_ip | TEXT | Browser/visitor IP |
 | method | TEXT | GET, POST, etc. |
 | path | TEXT | Request path |
-| host | TEXT | Host header |
-| user_agent | TEXT | Browser user-agent |
-| referer | TEXT | Referer header |
 | status_code | INTEGER | HTTP response status |
 | latency_ms | INTEGER | Round-trip time |
 | created_at | TEXT | Timestamp |
 
 Logs are auto-cleaned after 7 days.
 
-### `config` — Server configuration
+### `config`
 | Column | Type | Description |
 |--------|------|-------------|
 | key | TEXT PK | Config key |
-| value | TEXT | Config value |
-
-Used for dashboard password (stored as SHA-256 hash).
+| value | TEXT | Config value (dashboard password stored as SHA-256 hash) |
 
 ---
 

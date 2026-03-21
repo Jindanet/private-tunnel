@@ -50,10 +50,11 @@ class TunnelUI {
     this.render();
   }
 
-  setConnected(url, localTarget) {
+  setConnected(url, localTarget, tunnelType) {
     this.status = 'online';
     this.url = url;
     this.localTarget = localTarget;
+    this.tunnelType = tunnelType || 'http';
     this.render();
   }
 
@@ -100,7 +101,8 @@ class TunnelUI {
     lines.push(`  ${DIM}Status:${RESET}      ${statusColor}${dot} ${this.status}${RESET}`);
 
     if (this.url) {
-      lines.push(`  ${DIM}Forwarding:${RESET}  ${GREEN}${this.url}${RESET} ${DIM}\u2192${RESET} ${WHITE}${this.localTarget}${RESET}`);
+      const typeLabel = this.tunnelType === 'tcp' ? `${YELLOW}[TCP]${RESET} ` : '';
+      lines.push(`  ${DIM}Forwarding:${RESET}  ${typeLabel}${GREEN}${this.url}${RESET} ${DIM}\u2192${RESET} ${WHITE}${this.localTarget}${RESET}`);
     } else {
       lines.push(`  ${DIM}Forwarding:${RESET}  ${DIM}connecting...${RESET}`);
     }
