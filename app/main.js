@@ -32,6 +32,7 @@ function createWindow() {
     maximizable: false,
     autoHideMenuBar: true,
     backgroundColor: '#0a0a0a',
+    show: false, // wait for ready-to-show before displaying
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -40,6 +41,11 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    mainWindow.focus();
+  });
 
   mainWindow.on('close', (e) => {
     if (isQuitting) return; // allow close on quit
