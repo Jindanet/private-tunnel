@@ -20,6 +20,7 @@ if (!config.tunnels) { config.tunnels = []; saveConfig(config); }
 const tunnelInstances = new Map(); // id -> TunnelClient
 let mainWindow = null;
 let tray = null;
+let isQuitting = false;
 
 // ── Window ──────────────────────────────────────────────
 function createWindow() {
@@ -41,6 +42,7 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   mainWindow.on('close', (e) => {
+    if (isQuitting) return; // allow close on quit
     e.preventDefault();
     mainWindow.hide();
   });
@@ -76,6 +78,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {}); // keep running in tray
 
 app.on('before-quit', () => {
+  isQuitting = true;
   for (const [, client] of tunnelInstances) {
     try { client.disconnect(); } catch {}
   }
@@ -86,6 +89,12 @@ ipcMain.handle('get-config', () => ({ ...config }));
 
 ipcMain.handle('save-server-url', (_, url) => {
   config.serverUrl = url;
+  saveConfig(config);
+  return true;
+});
+
+ipcMain.handle('save-token', (_, token) => {
+  config.token = token || null;
   saveConfig(config);
   return true;
 });
@@ -122,6 +131,7 @@ ipcMain.handle('start-tunnel', (_, id) => {
   const TunnelClient = require('../client/tunnel-client');
   const client = new TunnelClient({
     serverUrl: config.serverUrl,
+    token: config.token || null,
     localHost: 'localhost',
     localPort: t.port,
     clientId: t.clientId,
@@ -138,6 +148,8 @@ ipcMain.handle('start-tunnel', (_, id) => {
     onError: (err) => {
       if (err.code === 'ECONNREFUSED') {
         mainWindow?.webContents.send('tunnel-status', { id, status: 'reconnecting', url: '' });
+      } else if (err.code === 'EUNAUTHORIZED') {
+        mainWindow?.webContents.send('tunnel-status', { id, status: 'error', url: '', error: 'Invalid token' });
       }
     },
   });

@@ -13,9 +13,17 @@ const WS_PORT = process.env.WS_PORT || 8080;
 const DASHBOARD_PORT = process.env.DASHBOARD_PORT || 8081;
 const PROXY_PORT = process.env.PROXY_PORT || 8082;
 const DOMAIN = process.env.DOMAIN;
+const TUNNEL_TOKEN = process.env.TUNNEL_TOKEN || null;
+
 if (!DOMAIN) {
   console.error('[Server] ERROR: DOMAIN environment variable is required. Set it in .env file.');
   process.exit(1);
+}
+
+if (!TUNNEL_TOKEN) {
+  console.warn('[Auth] WARNING: TUNNEL_TOKEN is not set — server is open to anyone. Set TUNNEL_TOKEN in .env to require authentication.');
+} else {
+  console.log('[Auth] Token authentication enabled.');
 }
 
 const tunnelManager = new TunnelManager(DOMAIN);
@@ -35,6 +43,18 @@ wss.on('connection', (ws, req) => {
     || req.headers['cf-connecting-ip']
     || req.headers['x-forwarded-for']
     || req.socket.remoteAddress;
+
+  // Token authentication
+  if (TUNNEL_TOKEN) {
+    const urlObj = new URL(req.url, 'http://localhost');
+    const token = urlObj.searchParams.get('token');
+    if (token !== TUNNEL_TOKEN) {
+      console.log(`[Auth] Rejected unauthorized connection from ${ip}`);
+      ws.close(4001, 'Unauthorized: invalid or missing token');
+      return;
+    }
+  }
+
   console.log(`[WS:8080] Tunnel client connected from ${ip}`);
   tunnelManager.handleNewClient(ws, ip);
 });

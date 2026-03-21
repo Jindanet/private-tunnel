@@ -202,10 +202,31 @@ pm2 startup   # Auto-start on boot
 | `DASHBOARD_PORT` | `8081` | Dashboard server port |
 | `PROXY_PORT` | `8082` | HTTP proxy port |
 | `DOMAIN` | *(required)* | Base domain (e.g. `ex.example.com`) |
+| `TUNNEL_TOKEN` | *(empty)* | Secret token clients must present to connect. Leave empty to allow anyone. |
 | `DASHBOARD_PASSWORD` | `AdminTunnel1234` | Dashboard login password |
 | `DB_PATH` | `./data/tunnel.db` | SQLite database path |
 | `TCP_PORT_MIN` | `30000` | Start of TCP tunnel port range |
 | `TCP_PORT_MAX` | `40000` | End of TCP tunnel port range |
+
+### Tunnel Authentication
+
+Set `TUNNEL_TOKEN` in `.env` to prevent unauthorized clients from creating tunnels:
+
+```bash
+# Generate a strong random token
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+```env
+TUNNEL_TOKEN=a3f8c2e1d4b7...   # paste generated value here
+```
+
+Clients then supply the token on first connect:
+```bash
+ptunnel http 3000 --token a3f8c2e1d4b7...
+```
+
+The token is saved to `~/.ptunnel` and used automatically on subsequent runs. In the desktop app, enter it in the **Setup** screen or **Settings** panel.
 
 ---
 

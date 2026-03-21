@@ -44,14 +44,20 @@ document.getElementById('backdrop').addEventListener('click', () => {
 document.getElementById('setup-connect-btn').addEventListener('click', async () => {
   const url = document.getElementById('setup-url').value.trim();
   if (!url.startsWith('ws')) { shake('setup-url'); return; }
+  const token = document.getElementById('setup-token').value.trim();
   await window.api.saveServerUrl(url);
+  await window.api.saveToken(token || null);
   config.serverUrl = url;
+  config.token = token || null;
   config.tunnels = config.tunnels || [];
   document.getElementById('server-url-text').textContent = url;
   showView('main');
   renderList();
 });
 document.getElementById('setup-url').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('setup-connect-btn').click();
+});
+document.getElementById('setup-token').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('setup-connect-btn').click();
 });
 document.getElementById('setup-guide-btn').addEventListener('click', () => {
@@ -72,7 +78,7 @@ function makeCard(t) {
   const running = s.status !== 'stopped';
   const card = document.createElement('div');
   card.id = 'card-' + t.id;
-  card.className = 'tcard' + (s.status !== 'stopped' ? ' ' + s.status : '');
+  card.className = 'tcard' + (s.status !== 'stopped' && s.status !== 'error' ? ' ' + s.status : s.status === 'error' ? ' error' : '');
 
   card.innerHTML = `
     <div class="tcard-top">
@@ -89,7 +95,9 @@ function makeCard(t) {
       ${s.url
         ? `<span class="url-text" data-url="${esc(s.url)}">${esc(s.url)}</span>
            <button class="copy-btn" data-copy="${esc(s.url)}">Copy</button>`
-        : `<span class="url-none">${running ? 'Connecting…' : 'Not started'}</span>`}
+        : s.error
+          ? `<span class="url-none" style="color:#ff5f56">⚠ ${esc(s.error)}</span>`
+          : `<span class="url-none">${running ? 'Connecting…' : 'Not started'}</span>`}
     </div>
     <div class="tcard-actions">
       ${running
@@ -147,12 +155,13 @@ async function doDel(id) {
   renderList(); updateDot();
 }
 
-function onTunnelStatus({ id, status, url }) {
+function onTunnelStatus({ id, status, url, error }) {
   if (!states.has(id)) states.set(id, { status: 'stopped', url: '', requests: [] });
   const s = states.get(id);
   s.status = status;
+  s.error = error || null;
   if (url) s.url = url;
-  if (status === 'stopped') s.url = '';
+  if (status === 'stopped' || status === 'error') s.url = '';
   refreshCard(id); updateDot();
 }
 
@@ -341,14 +350,18 @@ document.querySelectorAll('.g-tab').forEach(t => t.addEventListener('click', () 
 // ── Settings ─────────────────────────────────────────────
 document.getElementById('settings-btn').addEventListener('click', () => {
   document.getElementById('settings-url').value = config.serverUrl || '';
+  document.getElementById('settings-token').value = config.token || '';
   openPanel('panel-settings');
 });
 document.getElementById('close-settings-btn').addEventListener('click', () => closePanel('panel-settings'));
 document.getElementById('save-settings-btn').addEventListener('click', async () => {
   const url = document.getElementById('settings-url').value.trim();
   if (!url) { shake('settings-url'); return; }
+  const token = document.getElementById('settings-token').value.trim();
   await window.api.saveServerUrl(url);
+  await window.api.saveToken(token || null);
   config.serverUrl = url;
+  config.token = token || null;
   document.getElementById('server-url-text').textContent = url;
   closePanel('panel-settings');
   toast('Saved!');

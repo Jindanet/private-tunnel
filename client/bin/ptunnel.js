@@ -50,6 +50,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
 
   Options:
     --server <url>    Server WebSocket URL (saved to ~/.ptunnel after first use)
+    --token  <token>  Authentication token (saved to ~/.ptunnel after first use)
     --help, -h        Show this help message
   `);
   process.exit(0);
@@ -92,7 +93,6 @@ const serverIdx = args.indexOf('--server');
 let serverUrl = serverIdx !== -1 && args[serverIdx + 1] ? args[serverIdx + 1] : null;
 
 if (serverUrl) {
-  // Save to config for next time
   if (config.serverUrl !== serverUrl) {
     config.serverUrl = serverUrl;
     saveConfig(config);
@@ -104,6 +104,19 @@ if (serverUrl) {
   process.exit(1);
 }
 
+// Parse token — use arg, fallback to saved config
+const tokenIdx = args.indexOf('--token');
+let token = tokenIdx !== -1 && args[tokenIdx + 1] ? args[tokenIdx + 1] : null;
+
+if (token) {
+  if (config.token !== token) {
+    config.token = token;
+    saveConfig(config);
+  }
+} else {
+  token = config.token || null;
+}
+
 // Initialize UI
 const ui = new TunnelUI();
 ui.init();
@@ -111,6 +124,7 @@ ui.init();
 // Create tunnel client
 const client = new TunnelClient({
   serverUrl,
+  token,
   localHost,
   localPort,
   clientId,
@@ -125,9 +139,13 @@ const client = new TunnelClient({
     ui.addRequest(info);
   },
   onError: (err) => {
-    // Don't crash on connection errors during reconnect
     if (err.code === 'ECONNREFUSED') {
       ui.setDisconnected();
+    } else if (err.code === 'EUNAUTHORIZED') {
+      process.stdout.write('\n');
+      console.error(`Error: ${err.message}`);
+      console.error('Use --token <token> to provide your access token.');
+      process.exit(1);
     }
   },
 });

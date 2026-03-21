@@ -24,6 +24,10 @@
         <input id="setup-url" class="field-input" type="text"
           placeholder="wss://your-server.com/ws" autocomplete="off" spellcheck="false">
         <p class="field-hint">Get this URL from your server admin</p>
+        <label class="field-label" style="margin-top:10px">Access Token <span class="opt">(if required)</span></label>
+        <input id="setup-token" class="field-input" type="password"
+          placeholder="Enter token from server admin" autocomplete="off" spellcheck="false">
+        <p class="field-hint">Leave empty if the server has no token set</p>
         <button class="btn-primary full" id="setup-connect-btn">Connect →</button>
       </div>
       <button class="btn-link" id="setup-guide-btn">❓ How to get started</button>
@@ -146,6 +150,10 @@
       <input id="settings-url" class="field-input" type="text"
         placeholder="wss://your-server.com/ws" spellcheck="false">
       <p class="field-hint">Saved automatically to ~/.ptunnel</p>
+      <label class="field-label" style="margin-top:10px">Access Token <span class="opt">(optional)</span></label>
+      <input id="settings-token" class="field-input" type="password"
+        placeholder="Leave empty if no token required" spellcheck="false">
+      <p class="field-hint">Required if server has TUNNEL_TOKEN set</p>
       <button class="btn-primary full" id="save-settings-btn">Save</button>
       <div class="settings-footer">PrivateTunnel v1.0.0</div>
     </div>

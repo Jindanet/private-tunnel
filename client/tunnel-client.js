@@ -7,6 +7,7 @@ const { forwardRequest } = require('./local-forwarder');
 class TunnelClient {
   constructor(options) {
     this.serverUrl = options.serverUrl;
+    this.token = options.token || null;
     this.localHost = options.localHost || 'localhost';
     this.localPort = options.localPort;
     this.clientId = options.clientId || null;
@@ -34,7 +35,12 @@ class TunnelClient {
   }
 
   connect() {
-    this.ws = new WebSocket(this.serverUrl);
+    let url = this.serverUrl;
+    if (this.token) {
+      const sep = url.includes('?') ? '&' : '?';
+      url = `${url}${sep}token=${encodeURIComponent(this.token)}`;
+    }
+    this.ws = new WebSocket(url);
 
     this.ws.on('open', () => {
       this.connected = true;
@@ -64,8 +70,14 @@ class TunnelClient {
       }
     });
 
-    this.ws.on('close', () => {
+    this.ws.on('close', (code) => {
       this.connected = false;
+      if (code === 4001) {
+        // Unauthorized — wrong or missing token, don't reconnect
+        this.shouldReconnect = false;
+        this.onError(Object.assign(new Error('Unauthorized: invalid or missing token'), { code: 'EUNAUTHORIZED' }));
+        return;
+      }
       if (this.shouldReconnect) {
         this.onDisconnected();
         this._reconnect();

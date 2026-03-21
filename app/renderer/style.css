@@ -81,6 +81,7 @@ input,textarea{user-select:text}
   transition:border-color .25s}
 .tcard.online{border-color:#1c3328}
 .tcard.reconnecting{border-color:#332c10}
+.tcard.error{border-color:#3d1515}
 .tcard-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
 .tcard-left{display:flex;align-items:center;gap:10px}
 .type-badge{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;
