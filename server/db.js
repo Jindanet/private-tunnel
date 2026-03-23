@@ -67,6 +67,7 @@ function hashPassword(pw) {
 }
 
 function verifyPassword(pw) {
+  if (!pw) return false;
   const row = getConfig.get('dashboard_password');
   if (!row) return false;
   return row.value === hashPassword(pw);
