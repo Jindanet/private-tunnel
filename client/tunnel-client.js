@@ -127,6 +127,7 @@ class TunnelClient {
 
   _handleBinaryFrame(data) {
     const frame = decodeDataFrame(data);
+    if (!frame) return;
 
     if (frame.frameType === FRAME_REQUEST_BODY) {
       if (!this.requestBodies.has(frame.requestId)) {
@@ -227,6 +228,12 @@ class TunnelClient {
       );
 
       const latency = Date.now() - startTime;
+
+      // If ws disconnected while awaiting local response, abort
+      if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
+        result.bodyStream.destroy();
+        return;
+      }
 
       // Send response headers
       sendControl(this.ws, {

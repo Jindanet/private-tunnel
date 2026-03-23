@@ -41,6 +41,7 @@ function encodeDataFrame(frameType, requestId, chunk) {
 }
 
 function decodeDataFrame(buffer) {
+  if (!buffer || buffer.length < 17) return null;
   return {
     frameType: buffer[0],
     requestId: bytesToUuid(buffer.slice(1, 17)),
@@ -49,11 +50,11 @@ function decodeDataFrame(buffer) {
 }
 
 function sendControl(ws, msg) {
-  ws.send(JSON.stringify(msg));
+  try { ws.send(JSON.stringify(msg)); } catch {}
 }
 
 function sendData(ws, frameType, requestId, chunk) {
-  ws.send(encodeDataFrame(frameType, requestId, chunk));
+  try { ws.send(encodeDataFrame(frameType, requestId, chunk)); } catch {}
 }
 
 module.exports = {

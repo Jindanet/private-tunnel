@@ -36,11 +36,16 @@ function isAuthenticated(req) {
   return isValidSession(getCookie(req, 'session'));
 }
 
+const MAX_BODY = 64 * 1024; // 64 KB
+
 function parseBody(req) {
   return new Promise((resolve) => {
     let body = '';
-    req.on('data', (d) => body += d);
+    req.on('data', (d) => {
+      if (body.length < MAX_BODY) body += d;
+    });
     req.on('end', () => resolve(body));
+    req.on('error', () => resolve(''));
   });
 }
 

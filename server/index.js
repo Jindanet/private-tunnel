@@ -46,11 +46,16 @@ wss.on('connection', (ws, req) => {
 
   // Token authentication
   if (TUNNEL_TOKEN) {
-    const urlObj = new URL(req.url, 'http://localhost');
-    const token = urlObj.searchParams.get('token');
-    if (token !== TUNNEL_TOKEN) {
-      console.log(`[Auth] Rejected unauthorized connection from ${ip}`);
-      ws.close(4001, 'Unauthorized: invalid or missing token');
+    try {
+      const urlObj = new URL(req.url, 'http://localhost');
+      const token = urlObj.searchParams.get('token');
+      if (token !== TUNNEL_TOKEN) {
+        console.log(`[Auth] Rejected unauthorized connection from ${ip}`);
+        ws.close(4001, 'Unauthorized: invalid or missing token');
+        return;
+      }
+    } catch {
+      ws.close(4001, 'Unauthorized');
       return;
     }
   }

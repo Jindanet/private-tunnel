@@ -121,6 +121,12 @@ class TunnelManager {
 
         if (tunnelType === 'tcp') {
           this._allocateTcpPort().then((tcpPort) => {
+            // If client disconnected while we were allocating, abort
+            if (ws.readyState !== ws.OPEN) {
+              if (tcpPort) this.usedTcpPorts.delete(tcpPort);
+              return;
+            }
+
             if (!tcpPort) {
               sendControl(ws, { type: MSG.STREAM_ERROR, message: 'No TCP ports available in range' });
               return;
@@ -144,6 +150,8 @@ class TunnelManager {
               url: `${this.domain}:${tcpPort}`,
             });
             console.log(`[TunnelManager] TCP tunnel: ${subdomain} port ${tcpPort} -> localhost:${msg.localPort} from ${clientIp}`);
+          }).catch((err) => {
+            console.error('[TunnelManager] TCP allocation error:', err.message);
           });
         } else {
           this.tunnels.set(subdomain, tunnel);
@@ -195,7 +203,7 @@ class TunnelManager {
         const pending = tunnel.pendingRequests.get(msg.requestId);
         if (pending) {
           clearTimeout(pending.timeout);
-          pending.res.end();
+          if (!pending.res.destroyed) pending.res.end();
           this._logCompletedRequest(currentSubdomain, tunnel, pending);
           tunnel.pendingRequests.delete(msg.requestId);
         }
@@ -210,10 +218,12 @@ class TunnelManager {
         const pending = tunnel.pendingRequests.get(msg.requestId);
         if (pending) {
           clearTimeout(pending.timeout);
-          if (!pending.res.headersSent) {
-            pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
+          if (!pending.res.destroyed) {
+            if (!pending.res.headersSent) {
+              pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
+            }
+            pending.res.end(`Tunnel error: ${msg.message || 'Unknown error'}`);
           }
-          pending.res.end(`Tunnel error: ${msg.message || 'Unknown error'}`);
           pending.statusCode = 502;
           pending.error = msg.message;
           this._logCompletedRequest(currentSubdomain, tunnel, pending);
@@ -273,6 +283,7 @@ class TunnelManager {
     if (!tunnel) return;
 
     const frame = decodeDataFrame(data);
+    if (!frame) return;
 
     if (frame.frameType === FRAME_RESPONSE_BODY) {
       const pending = tunnel.pendingRequests.get(frame.requestId);
@@ -335,10 +346,12 @@ class TunnelManager {
       // HTTP cleanup
       for (const [, pending] of tunnel.pendingRequests) {
         clearTimeout(pending.timeout);
-        if (!pending.res.headersSent) {
-          pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
+        if (!pending.res.destroyed) {
+          if (!pending.res.headersSent) {
+            pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
+          }
+          pending.res.end('Tunnel disconnected');
         }
-        pending.res.end('Tunnel disconnected');
       }
       tunnel.pendingRequests.clear();
 

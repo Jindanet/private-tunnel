@@ -29,10 +29,10 @@ function handleProxy(req, res, subdomain, tunnelManager) {
   const timeout = setTimeout(() => {
     if (tunnel.pendingRequests.has(requestId)) {
       tunnel.pendingRequests.delete(requestId);
-      if (!res.headersSent) {
-        res.writeHead(504, { 'Content-Type': 'text/plain' });
+      if (!res.destroyed) {
+        if (!res.headersSent) res.writeHead(504, { 'Content-Type': 'text/plain' });
+        res.end('Gateway Timeout');
       }
-      res.end('Gateway Timeout');
     }
   }, REQUEST_TIMEOUT);
 
