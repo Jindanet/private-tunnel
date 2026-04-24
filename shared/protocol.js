@@ -3,7 +3,10 @@ const crypto = require('node:crypto');
 // Control message types
 const MSG = {
   TUNNEL_OPEN: 'tunnel:open',
+  TUNNEL_CHECK: 'tunnel:check',
+  TUNNEL_CHECK_RESULT: 'tunnel:check-result',
   TUNNEL_ASSIGNED: 'tunnel:assigned',
+  TUNNEL_ERROR: 'tunnel:error',
   TUNNEL_CLOSE: 'tunnel:close',
   REQUEST_START: 'request:start',
   RESPONSE_START: 'response:start',

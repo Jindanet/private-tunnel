@@ -8,160 +8,196 @@
 </head>
 <body>
 <div id="app">
-
-  <!-- ═══════════════════════════ -->
-  <!-- VIEW: SETUP                 -->
-  <!-- ═══════════════════════════ -->
   <div class="view" id="view-setup">
     <div class="setup-wrap">
-      <div class="logo-block">
-        <div class="logo-glow">⚡</div>
-        <h1 class="logo-text"><span>Private</span>Tunnel</h1>
-        <p class="logo-sub">Expose localhost to the internet</p>
+      <div class="setup-topbar">
+        <div class="setup-badge" data-i18n="setupBadge">Initial Setup</div>
+        <div class="lang-switch">
+          <button type="button" data-lang="en"></button>
+          <button type="button" data-lang="th"></button>
+        </div>
       </div>
+
+      <div class="setup-hero">
+        <div class="logo-block">
+          <div class="logo-glow">⚡</div>
+          <h1 class="logo-text"><span>Private</span>Tunnel</h1>
+          <p class="logo-sub" data-i18n="setupHero">Save the server profile once, then create short, reusable tunnel profiles inside this GUI.</p>
+        </div>
+
+        <div class="setup-note">
+          <strong data-i18n="setupNoteTitle">This GUI requires a complete server profile before it can open tunnels.</strong>
+          <span data-i18n="setupNoteBody">The WebSocket URL and access token are saved together, reused automatically, and shown again in Server Profile settings.</span>
+        </div>
+      </div>
+
       <div class="setup-form">
-        <label class="field-label">Server WebSocket URL</label>
-        <input id="setup-url" class="field-input" type="text"
-          placeholder="wss://your-server.com/ws" autocomplete="off" spellcheck="false">
-        <p class="field-hint">Get this URL from your server admin</p>
-        <label class="field-label" style="margin-top:10px">Access Token <span class="opt">(if required)</span></label>
-        <input id="setup-token" class="field-input" type="password"
-          placeholder="Enter token from server admin" autocomplete="off" spellcheck="false">
-        <p class="field-hint">Leave empty if the server has no token set</p>
-        <button class="btn-primary full" id="setup-connect-btn">Connect →</button>
+        <label class="field-label" data-i18n="fieldServerUrl">Server WebSocket URL</label>
+        <input id="setup-url" class="field-input" type="text" data-i18n-placeholder="placeholderServerUrl" placeholder="wss://example.com/_private-tunnel/ws" autocomplete="off" spellcheck="false">
+        <div class="field-error" id="setup-url-error"></div>
+        <p class="field-hint" data-i18n="setupUrlHint">Paste the full WebSocket URL from the server hoster, or a hostname if they told you to use the default PrivateTunnel path.</p>
+
+        <label class="field-label spaced" data-i18n="fieldToken">Access Token</label>
+        <input id="setup-token" class="field-input" type="password" data-i18n-placeholder="placeholderToken" placeholder="Paste token from the server hoster" autocomplete="off" spellcheck="false">
+        <div class="field-error" id="setup-token-error"></div>
+        <p class="field-hint" data-i18n="setupTokenHint">This desktop client requires a token so every tunnel starts from a clear, reusable server profile.</p>
+
+        <div class="form-status" id="setup-status"></div>
+        <button class="btn-primary full" id="setup-connect-btn" data-i18n="saveServerProfile">Save Server Profile</button>
       </div>
-      <button class="btn-link" id="setup-guide-btn">❓ How to get started</button>
+
+      <button class="btn-link" id="setup-guide-btn" data-i18n="openQuickGuide">Open Quick Guide</button>
     </div>
   </div>
 
-  <!-- ═══════════════════════════ -->
-  <!-- VIEW: MAIN                  -->
-  <!-- ═══════════════════════════ -->
   <div class="view hidden" id="view-main">
     <div class="header">
       <div class="header-brand">
         <div class="brand-dot" id="header-dot"></div>
-        <span class="brand-name">PrivateTunnel</span>
+        <div>
+          <div class="brand-name">PrivateTunnel</div>
+          <div class="brand-sub" data-i18n="brandSub">Hoster-linked local tunnel client</div>
+        </div>
       </div>
       <div class="header-actions">
-        <button class="icon-btn" id="guide-btn" title="How to use">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor"/>
-          </svg>
-        </button>
-        <button class="icon-btn" id="settings-btn" title="Settings">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
+        <div class="lang-switch compact">
+          <button type="button" data-lang="en"></button>
+          <button type="button" data-lang="th"></button>
+        </div>
+        <button class="icon-btn" id="guide-btn" data-i18n-title="titleGuide" title="How to use">?</button>
+        <button class="icon-btn" id="settings-btn" data-i18n-title="titleSettings" title="Server profile">⚙</button>
       </div>
     </div>
 
     <div class="server-bar">
-      <span class="server-label">SERVER</span>
+      <span class="server-label" data-i18n="serverLabel">Server</span>
       <span class="server-url" id="server-url-text">—</span>
+      <span class="server-pill" id="server-token-state">TOKEN MISSING</span>
+    </div>
+
+    <div class="list-head">
+      <div>
+        <div class="section-title" data-i18n="tunnelProfiles">Tunnel Profiles</div>
+        <div class="section-sub" data-i18n="tunnelProfilesSub">Create reusable tunnel entries, validate custom hosts, then start or stop them on demand.</div>
+      </div>
     </div>
 
     <div class="tunnel-list" id="tunnel-list">
       <div class="empty-state" id="empty-state">
-        <div class="empty-icon">🔌</div>
-        <p class="empty-title">No tunnels yet</p>
-        <p class="empty-hint">Tap "Add Tunnel" to expose a local port</p>
+        <div class="empty-icon">◇</div>
+        <p class="empty-title" data-i18n="emptyTitle">No tunnel profiles yet</p>
+        <p class="empty-hint" data-i18n="emptyHint">Add a tunnel, choose a domain or remembered host name, and let the server validate it before start.</p>
       </div>
     </div>
 
     <div class="bottom-bar">
-      <button class="btn-add-tunnel" id="add-tunnel-btn">＋ Add Tunnel</button>
+      <button class="btn-add-tunnel" id="add-tunnel-btn" data-i18n="addTunnel">Add Tunnel</button>
     </div>
   </div>
 
-  <!-- BACKDROP -->
   <div class="backdrop hidden" id="backdrop"></div>
 
-  <!-- ═══════════════════════════ -->
-  <!-- PANEL: ADD TUNNEL (bottom)  -->
-  <!-- ═══════════════════════════ -->
   <div class="panel panel-bottom" id="panel-add">
     <div class="drag-handle"></div>
-    <h2 class="panel-title">Add Tunnel</h2>
+    <h2 class="panel-title" data-i18n="createTunnelProfile">Create Tunnel Profile</h2>
+    <p class="panel-subtitle" data-i18n="createTunnelProfileSub">Choose the local port, publish domain, and optional remembered host name. The server can check if that host is already reserved.</p>
 
     <div class="type-grid">
       <button class="type-card active" data-type="http">
         <span class="type-icon">🌐</span>
-        <span class="type-name">HTTP</span>
-        <span class="type-desc">Website / API</span>
+        <span class="type-name" data-i18n="httpType">HTTP</span>
+        <span class="type-desc" data-i18n="httpTypeDesc">Web app / API / webhook</span>
       </button>
       <button class="type-card" data-type="tcp">
         <span class="type-icon">🔌</span>
-        <span class="type-name">TCP</span>
-        <span class="type-desc">Game / SSH / DB</span>
+        <span class="type-name" data-i18n="tcpType">TCP</span>
+        <span class="type-desc" data-i18n="tcpTypeDesc">Game / SSH / database</span>
       </button>
     </div>
 
-    <!-- Quick presets -->
-    <div class="presets" id="presets">
-      <!-- injected by JS based on selected type -->
+    <div class="presets" id="presets"></div>
+
+    <div class="form-row">
+      <div class="form-col">
+        <label class="field-label" data-i18n="fieldLocalPort">Local Port</label>
+        <input id="add-port" class="field-input" type="number" data-i18n-placeholder="placeholderPort" placeholder="3000" min="1" max="65535">
+      </div>
+      <div class="form-col">
+        <label class="field-label" data-i18n="fieldTunnelName">Tunnel Name</label>
+        <input id="add-name" class="field-input" type="text" data-i18n-placeholder="placeholderTunnelName" placeholder="My staging API">
+      </div>
     </div>
 
     <div class="form-row">
       <div class="form-col">
-        <label class="field-label">Port</label>
-        <input id="add-port" class="field-input" type="number" placeholder="e.g. 3000" min="1" max="65535">
+        <label class="field-label" data-i18n="fieldPublishDomain">Publish Domain</label>
+        <input id="add-domain" class="field-input" type="text" data-i18n-placeholder="placeholderPublishDomain" placeholder="devshop.com">
       </div>
-      <div class="form-col">
-        <label class="field-label">Name <span class="opt">(optional)</span></label>
-        <input id="add-name" class="field-input" type="text" placeholder="My Website">
+      <div class="form-col" id="add-mode-wrap">
+        <label class="field-label" data-i18n="fieldHttpPublishMode">HTTP Publish Mode</label>
+        <select id="add-mode" class="field-input">
+          <option value="subdomain" data-i18n="modeSubdomain">Remembered/custom subdomain</option>
+          <option value="root" data-i18n="modeRoot">Exact root domain</option>
+        </select>
       </div>
     </div>
 
+    <div class="form-row single" id="add-subdomain-wrap">
+      <div class="form-col">
+        <label class="field-label" data-i18n="fieldCustomHost">Custom Host Name</label>
+        <div class="inline-field">
+          <input id="add-subdomain" class="field-input" type="text" data-i18n-placeholder="placeholderCustomHost" placeholder="mystaging">
+          <button class="btn-inline" id="check-subdomain-btn" type="button" data-i18n="check">Check</button>
+        </div>
+        <p class="field-hint" data-i18n="customHostHint">If available, the server will remember this host label for this tunnel profile and request it again on reconnect.</p>
+      </div>
+    </div>
+
+    <div class="check-status hint" id="add-check-status"></div>
+
     <div class="panel-actions">
-      <button class="btn-ghost" id="cancel-add-btn">Cancel</button>
-      <button class="btn-primary" id="confirm-add-btn">Add &amp; Start</button>
+      <button class="btn-ghost" id="cancel-add-btn" data-i18n="cancel">Cancel</button>
+      <button class="btn-primary" id="confirm-add-btn" data-i18n="saveAndStart">Save and Start</button>
     </div>
   </div>
 
-  <!-- ═══════════════════════════ -->
-  <!-- PANEL: GUIDE (right)        -->
-  <!-- ═══════════════════════════ -->
   <div class="panel panel-right" id="panel-guide">
     <div class="panel-header">
-      <h2 class="panel-title">How to Use</h2>
+      <h2 class="panel-title" data-i18n="howToUse">How to Use</h2>
       <button class="close-btn" id="close-guide-btn">✕</button>
     </div>
     <div class="guide-tabs">
-      <button class="g-tab active" data-g="website">🌐 Website</button>
-      <button class="g-tab" data-g="game">🎮 Game</button>
-      <button class="g-tab" data-g="ssh">🔑 SSH</button>
+      <button class="g-tab active" data-g="website" data-i18n="guideWebsite">Website</button>
+      <button class="g-tab" data-g="game" data-i18n="guideGame">Game</button>
+      <button class="g-tab" data-g="ssh" data-i18n="guideSsh">SSH</button>
     </div>
     <div class="guide-body" id="guide-body"></div>
   </div>
 
-  <!-- ═══════════════════════════ -->
-  <!-- PANEL: SETTINGS (right)     -->
-  <!-- ═══════════════════════════ -->
   <div class="panel panel-right" id="panel-settings">
     <div class="panel-header">
-      <h2 class="panel-title">Settings</h2>
+      <h2 class="panel-title" data-i18n="serverProfile">Server Profile</h2>
       <button class="close-btn" id="close-settings-btn">✕</button>
     </div>
     <div class="settings-body">
-      <label class="field-label">Server WebSocket URL</label>
-      <input id="settings-url" class="field-input" type="text"
-        placeholder="wss://your-server.com/ws" spellcheck="false">
-      <p class="field-hint">Saved automatically to ~/.ptunnel</p>
-      <label class="field-label" style="margin-top:10px">Access Token <span class="opt">(optional)</span></label>
-      <input id="settings-token" class="field-input" type="password"
-        placeholder="Leave empty if no token required" spellcheck="false">
-      <p class="field-hint">Required if server has TUNNEL_TOKEN set</p>
-      <button class="btn-primary full" id="save-settings-btn">Save</button>
-      <div class="settings-footer">PrivateTunnel v1.0.0</div>
+      <p class="panel-subtitle" data-i18n="serverProfileSub">Update the saved server profile used by every tunnel in this GUI.</p>
+
+      <label class="field-label" data-i18n="fieldServerUrl">Server WebSocket URL</label>
+      <input id="settings-url" class="field-input" type="text" data-i18n-placeholder="placeholderServerUrl" placeholder="wss://example.com/_private-tunnel/ws" spellcheck="false">
+      <div class="field-error" id="settings-url-error"></div>
+      <p class="field-hint" data-i18n="settingsUrlHint">The app normalizes the server URL before saving it.</p>
+
+      <label class="field-label spaced" data-i18n="fieldToken">Access Token</label>
+      <input id="settings-token" class="field-input" type="password" data-i18n-placeholder="placeholderTokenUpdated" placeholder="Paste updated access token" spellcheck="false">
+      <div class="field-error" id="settings-token-error"></div>
+      <p class="field-hint" data-i18n="settingsTokenHint">A token is required in this GUI so the server profile stays explicit and reusable.</p>
+
+      <div class="form-status" id="settings-status"></div>
+      <button class="btn-primary full" id="save-settings-btn" data-i18n="saveServerProfile">Save Server Profile</button>
     </div>
   </div>
 
-  <!-- TOAST -->
   <div class="toast" id="toast"></div>
-
 </div>
 <script src="app.js"></script>
 </body>

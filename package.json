@@ -18,13 +18,14 @@
     "build:macos": "pkg client/bin/ptunnel.js --targets node22-macos-x64 --output dist/ptunnel-macos",
     "build:macos-arm": "pkg client/bin/ptunnel.js --targets node22-macos-arm64 --output dist/ptunnel-macos-arm64",
     "build:app": "electron-builder --win --linux --mac",
-    "build:app:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
+    "build:app:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false CSC_LINK=false electron-builder --win --config.win.signAndEditExecutable=false",
     "build:app:linux": "electron-builder --linux",
     "build:app:mac": "electron-builder --mac"
   },
   "dependencies": {
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^12.9.0",
     "dotenv": "^17.3.1",
+    "mysql2": "^3.22.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -39,6 +40,7 @@
       "app/**/*",
       "client/tunnel-client.js",
       "client/local-forwarder.js",
+      "client/server-url.js",
       "shared/protocol.js",
       "node_modules/**/*",
       "package.json"
@@ -49,12 +51,14 @@
     "win": {
       "target": [
         {
-          "target": "zip",
+          "target": "dir",
           "arch": [
             "x64"
           ]
         }
-      ]
+      ],
+      "signingHashAlgorithms": [],
+      "sign": null
     },
     "linux": {
       "target": [

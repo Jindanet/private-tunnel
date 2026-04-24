@@ -2,16 +2,20 @@ const WebSocket = require('ws');
 const net = require('node:net');
 const os = require('node:os');
 const { MSG, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, decodeDataFrame, sendControl, sendData } = require('../shared/protocol');
-const { forwardRequest } = require('./local-forwarder');
+const { createForwardRequest } = require('./local-forwarder');
+const { normalizeServerWebSocketUrl } = require('./server-url');
 
 class TunnelClient {
   constructor(options) {
-    this.serverUrl = options.serverUrl;
+    this.serverUrl = normalizeServerWebSocketUrl(options.serverUrl);
     this.token = options.token || null;
     this.localHost = options.localHost || 'localhost';
     this.localPort = options.localPort;
     this.clientId = options.clientId || null;
     this.tunnelType = options.tunnelType || 'http';
+    this.publishDomain = options.publishDomain || '';
+    this.publishMode = options.publishMode === 'root' ? 'root' : 'subdomain';
+    this.desiredSubdomain = String(options.desiredSubdomain || '').trim().toLowerCase();
     this.ws = null;
     this.subdomain = null;
     this.url = null;
@@ -26,9 +30,8 @@ class TunnelClient {
     this.onRequest = options.onRequest || (() => {});
     this.onError = options.onError || (() => {});
 
-    // HTTP: track incoming request bodies and metadata
-    this.requestBodies = new Map();
-    this._pendingRequests = new Map();
+    // HTTP: requestId -> active local request/response stream state
+    this.requestStreams = new Map();
 
     // TCP: connId -> net.Socket
     this.tcpSockets = new Map();
@@ -52,6 +55,9 @@ class TunnelClient {
         tunnelType: this.tunnelType,
         localPort: this.localPort,
         clientId: this.clientId,
+        publishDomain: this.publishDomain || null,
+        publishMode: this.publishMode,
+        desiredSubdomain: this.desiredSubdomain || null,
         hostname: os.hostname(),
         os: `${os.platform()} ${os.release()} (${os.arch()})`,
       });
@@ -72,6 +78,8 @@ class TunnelClient {
 
     this.ws.on('close', (code) => {
       this.connected = false;
+      this._clearRequestStreams(new Error('Tunnel WebSocket closed'));
+      this._clearTcpSockets();
       if (code === 4001) {
         // Unauthorized — wrong or missing token, don't reconnect
         this.shouldReconnect = false;
@@ -94,7 +102,22 @@ class TunnelClient {
       case MSG.TUNNEL_ASSIGNED:
         this.subdomain = msg.subdomain;
         this.url = msg.url;
-        this.onConnected({ subdomain: msg.subdomain, url: msg.url, tunnelType: msg.tunnelType });
+        this.onConnected({
+          subdomain: msg.subdomain,
+          publicHost: msg.publicHost || '',
+          publishDomain: msg.publishDomain || this.publishDomain || '',
+          publishMode: msg.publishMode || this.publishMode,
+          url: msg.url,
+          tunnelType: msg.tunnelType,
+        });
+        break;
+
+      case MSG.TUNNEL_ERROR:
+        this.shouldReconnect = false;
+        if (this.ws && this.ws.readyState === this.ws.OPEN) {
+          this.ws.close();
+        }
+        this.onError(Object.assign(new Error(msg.message || 'Tunnel setup failed'), { code: 'ETUNNELSETUP' }));
         break;
 
       case MSG.TCP_CONNECT:
@@ -116,7 +139,7 @@ class TunnelClient {
         break;
 
       case MSG.STREAM_ERROR:
-        this.requestBodies.delete(msg.requestId);
+        this._abortRequestStream(msg.requestId, msg.message || 'Request cancelled by server');
         break;
 
       case MSG.PING:
@@ -130,10 +153,10 @@ class TunnelClient {
     if (!frame) return;
 
     if (frame.frameType === FRAME_REQUEST_BODY) {
-      if (!this.requestBodies.has(frame.requestId)) {
-        this.requestBodies.set(frame.requestId, []);
+      const stream = this.requestStreams.get(frame.requestId);
+      if (stream && stream.localReq && !stream.localReq.destroyed) {
+        stream.localReq.write(frame.data);
       }
-      this.requestBodies.get(frame.requestId).push(frame.data);
     } else if (frame.frameType === FRAME_TCP_DATA) {
       const sock = this.tcpSockets.get(frame.requestId);
       if (sock && !sock.destroyed) {
@@ -180,99 +203,137 @@ class TunnelClient {
     }
   }
 
-  async _handleRequestStart(msg) {
+  _handleRequestStart(msg) {
     const { requestId, method, path, headers } = msg;
-    const startTime = Date.now();
+    const forward = createForwardRequest(
+      this.localHost,
+      this.localPort,
+      method,
+      path,
+      headers
+    );
 
-    // Initialize body buffer
-    this.requestBodies.set(requestId, []);
+    const stream = {
+      requestId,
+      method,
+      path,
+      startedAt: Date.now(),
+      localReq: forward.localReq,
+      abort: forward.abort,
+      reported: false,
+    };
 
-    // For bodyless methods, forward immediately
-    if (method === 'GET' || method === 'HEAD' || method === 'DELETE' || method === 'OPTIONS') {
-      await this._forwardToLocal(requestId, method, path, headers, []);
-    } else {
-      // For POST/PUT/PATCH, store metadata and wait for stream:end
-      this._pendingRequests.set(requestId, { method, path, headers });
+    this.requestStreams.set(requestId, stream);
+    this._wireLocalResponse(stream, forward.responsePromise);
+  }
+
+  _handleRequestEnd(requestId) {
+    const stream = this.requestStreams.get(requestId);
+    if (stream && stream.localReq && !stream.localReq.destroyed) {
+      stream.localReq.end();
     }
   }
 
-  async _handleRequestEnd(requestId) {
-    // This is called when the request body stream is complete
-    // Find the pending request info — we need the original request details
-    // They were already processed in _handleRequestStart for bodyless methods
-    const bodyChunks = this.requestBodies.get(requestId);
-    if (!bodyChunks) return; // Already handled (GET, etc.)
-
-    // For requests with body, we need to store request metadata too
-    // Let's refactor: store request metadata alongside body
-    if (this._pendingRequests && this._pendingRequests.has(requestId)) {
-      const { method, path, headers } = this._pendingRequests.get(requestId);
-      this._pendingRequests.delete(requestId);
-      await this._forwardToLocal(requestId, method, path, headers, bodyChunks);
-    }
-
-    this.requestBodies.delete(requestId);
-  }
-
-  async _forwardToLocal(requestId, method, path, headers, bodyChunks) {
-    const startTime = Date.now();
-
-    try {
-      const result = await forwardRequest(
-        this.localHost,
-        this.localPort,
-        method,
-        path,
-        headers,
-        bodyChunks
-      );
-
-      const latency = Date.now() - startTime;
-
-      // If ws disconnected while awaiting local response, abort
-      if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
+  _wireLocalResponse(stream, responsePromise) {
+    responsePromise.then((result) => {
+      const current = this.requestStreams.get(stream.requestId);
+      if (!current) {
         result.bodyStream.destroy();
         return;
       }
 
-      // Send response headers
+      current.responseStream = result.bodyStream;
+
+      if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
+        result.bodyStream.destroy();
+        this.requestStreams.delete(stream.requestId);
+        return;
+      }
+
       sendControl(this.ws, {
         type: MSG.RESPONSE_START,
-        requestId,
+        requestId: stream.requestId,
         statusCode: result.statusCode,
         headers: result.headers,
       });
 
-      // Stream response body
       result.bodyStream.on('data', (chunk) => {
-        sendData(this.ws, FRAME_RESPONSE_BODY, requestId, chunk);
+        if (this.ws && this.ws.readyState === this.ws.OPEN) {
+          sendData(this.ws, FRAME_RESPONSE_BODY, stream.requestId, chunk);
+        }
       });
 
       result.bodyStream.on('end', () => {
-        sendControl(this.ws, { type: MSG.STREAM_END, requestId });
+        if (this.ws && this.ws.readyState === this.ws.OPEN) {
+          sendControl(this.ws, { type: MSG.STREAM_END, requestId: stream.requestId });
+        }
+        this._reportRequest(stream, result.statusCode, null);
+        this.requestStreams.delete(stream.requestId);
       });
 
       result.bodyStream.on('error', (err) => {
-        sendControl(this.ws, { type: MSG.STREAM_ERROR, requestId, message: err.message });
+        if (this.ws && this.ws.readyState === this.ws.OPEN) {
+          sendControl(this.ws, { type: MSG.STREAM_ERROR, requestId: stream.requestId, message: err.message });
+        }
+        this._reportRequest(stream, 502, err.message);
+        this.requestStreams.delete(stream.requestId);
       });
+    }).catch((err) => {
+      const current = this.requestStreams.get(stream.requestId);
+      if (!current) return;
 
-      // Notify UI
-      this.onRequest({ method, path, statusCode: result.statusCode, latency });
+      if (this.ws && this.ws.readyState === this.ws.OPEN) {
+        sendControl(this.ws, {
+          type: MSG.STREAM_ERROR,
+          requestId: stream.requestId,
+          message: err.code === 'ECONNREFUSED'
+            ? `Connection refused: localhost:${this.localPort}`
+            : err.message,
+        });
+      }
 
-    } catch (err) {
-      const latency = Date.now() - startTime;
+      this._reportRequest(stream, 502, err.message);
+      this.requestStreams.delete(stream.requestId);
+    });
+  }
 
-      // Local service connection failed
-      sendControl(this.ws, {
-        type: MSG.STREAM_ERROR,
-        requestId,
-        message: err.code === 'ECONNREFUSED'
-          ? `Connection refused: localhost:${this.localPort}`
-          : err.message,
-      });
+  _reportRequest(stream, statusCode, error) {
+    if (!stream || stream.reported) return;
+    stream.reported = true;
+    this.onRequest({
+      method: stream.method,
+      path: stream.path,
+      statusCode,
+      latency: Date.now() - stream.startedAt,
+      error: error || null,
+    });
+  }
 
-      this.onRequest({ method, path, statusCode: 502, latency, error: err.message });
+  _abortRequestStream(requestId, message) {
+    const stream = this.requestStreams.get(requestId);
+    if (!stream) return;
+
+    if (stream.abort) {
+      stream.abort(new Error(message || 'Request aborted'));
     }
+    if (stream.responseStream && !stream.responseStream.destroyed) {
+      stream.responseStream.destroy();
+    }
+
+    this.requestStreams.delete(requestId);
+  }
+
+  _clearRequestStreams(err) {
+    for (const [requestId] of this.requestStreams) {
+      this._abortRequestStream(requestId, err && err.message);
+    }
+  }
+
+  _clearTcpSockets() {
+    for (const [, sock] of this.tcpSockets) {
+      sock.destroy();
+    }
+    this.tcpSockets.clear();
   }
 
   _reconnect() {
@@ -291,10 +352,8 @@ class TunnelClient {
 
   disconnect() {
     this.shouldReconnect = false;
-    for (const [, sock] of this.tcpSockets) {
-      sock.destroy();
-    }
-    this.tcpSockets.clear();
+    this._clearRequestStreams(new Error('Tunnel disconnected by client'));
+    this._clearTcpSockets();
     if (this.ws) {
       sendControl(this.ws, { type: MSG.TUNNEL_CLOSE });
       this.ws.close();

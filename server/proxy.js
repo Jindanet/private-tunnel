@@ -1,13 +1,15 @@
 const { MSG, FRAME_REQUEST_BODY, generateRequestId, sendControl, sendData } = require('../shared/protocol');
+const { normalizeDomain } = require('./routing');
 
 const REQUEST_TIMEOUT = 30000;
 
-function handleProxy(req, res, subdomain, tunnelManager) {
-  const tunnel = tunnelManager.getTunnel(subdomain);
+function handleProxy(req, res, publicHost, tunnelManager) {
+  const host = normalizeDomain(publicHost);
+  const tunnel = tunnelManager.getHttpTunnel(host);
 
   if (!tunnel) {
     res.writeHead(502, { 'Content-Type': 'text/html' });
-    res.end(`<html><body><h1>502 Bad Gateway</h1><p>Tunnel not found: ${subdomain}</p></body></html>`);
+    res.end(`<html><body><h1>502 Bad Gateway</h1><p>Tunnel not found: ${host}</p></body></html>`);
     return;
   }
 
@@ -29,6 +31,7 @@ function handleProxy(req, res, subdomain, tunnelManager) {
   const timeout = setTimeout(() => {
     if (tunnel.pendingRequests.has(requestId)) {
       tunnel.pendingRequests.delete(requestId);
+      sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message: 'Gateway Timeout' });
       if (!res.destroyed) {
         if (!res.headersSent) res.writeHead(504, { 'Content-Type': 'text/plain' });
         res.end('Gateway Timeout');
@@ -47,7 +50,7 @@ function handleProxy(req, res, subdomain, tunnelManager) {
     userAgent: req.headers['user-agent'] || null,
     referer: req.headers['referer'] || null,
     reqContentType: req.headers['content-type'] || null,
-    reqContentLength: req.headers['content-length'] ? parseInt(req.headers['content-length']) : null,
+    reqContentLength: req.headers['content-length'] ? parseInt(req.headers['content-length'], 10) : null,
     statusCode: null,
     error: null,
   });
@@ -74,6 +77,22 @@ function handleProxy(req, res, subdomain, tunnelManager) {
 
   req.on('error', (err) => {
     sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message: err.message });
+  });
+
+  req.on('aborted', () => {
+    if (tunnel.pendingRequests.has(requestId)) {
+      clearTimeout(timeout);
+      tunnel.pendingRequests.delete(requestId);
+      sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message: 'Client aborted the request' });
+    }
+  });
+
+  res.on('close', () => {
+    if (tunnel.pendingRequests.has(requestId) && !res.writableEnded) {
+      clearTimeout(timeout);
+      tunnel.pendingRequests.delete(requestId);
+      sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message: 'Client disconnected before the response finished' });
+    }
   });
 }
 

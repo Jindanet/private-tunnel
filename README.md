@@ -1,150 +1,101 @@
 # PrivateTunnel
 
-**Self-hosted ngrok alternative** — Expose your localhost to the internet with a single command. Supports both HTTP and raw TCP tunneling.
+Hoster-first self-hosted tunnel platform for HTTP and TCP services.
+
+PrivateTunnel lets a server owner manage publish domains, admin routes, authentication, request visibility, and client onboarding from one place while keeping the client side short and simple.
 
 ```bash
-# HTTP tunnel → https://{id}.your-domain.com
-$ ptunnel http 3000
+# First-time client setup
+ptunnel init --server wss://ex.example.com/_private-tunnel/ws --token YOUR_TOKEN
 
-  PrivateTunnel   (Ctrl+C to quit)
-  ────────────────────────────────────────────
-  Status:      ● online
-  Forwarding:  https://a7f3bc01.ex.example.com → localhost:3000
-
-# TCP tunnel (Minecraft, SSH, game servers, etc.)
-$ ptunnel tcp 25565
-
-  Status:      ● online
-  Forwarding:  [TCP] ex.example.com:30001 → localhost:25565
+# After that, daily usage stays short
+ptunnel http 3000
+ptunnel tcp 25565
+ptunnel http 3000 --domain app.ex.example.com
+ptunnel http 3000 --domain demo.ex.example.com --root
 ```
 
-## Table of Contents
+## What Changed
 
-- [Background](#background)
-- [Architecture](#architecture)
-- [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Server Setup](#server-setup)
-- [Client Usage](#client-usage)
-- [Pre-built Binaries](#pre-built-binaries)
-- [Desktop App](#desktop-app)
-- [Dashboard](#dashboard)
-- [DNS & SSL Configuration](#dns--ssl-configuration)
-- [Nginx Configuration](#nginx-configuration)
-- [Problems Encountered & Solutions](#problems-encountered--solutions)
-- [Wire Protocol](#wire-protocol)
-- [Database Schema](#database-schema)
-- [License](#license)
+This project now includes:
 
----
-
-## Background
-
-We needed a self-hosted tunnel solution similar to ngrok for exposing local development servers to the internet. The requirements were:
-
-1. **Client runs a single command** (`ptunnel http 3000` or `ptunnel tcp 25565`) and gets a unique public URL
-2. **Each client gets a persistent subdomain** — reconnecting gives the same URL
-3. **Server manages everything** — no port forwarding, no manual configuration
-4. **Real-time dashboard** with authentication to monitor all tunnels and requests
-5. **Minimal dependencies** — only Node.js built-ins + `ws` + `better-sqlite3`
-6. **TCP tunneling** — raw TCP for game servers, SSH, databases, etc. with auto firewall management
-
----
+- Hoster-first server settings stored in the database, seeded from `.env` on first boot
+- Multiple publish domains per server, each with independent `subdomain` and `root` publishing flags
+- Dedicated control namespace under `/_private-tunnel/*` so normal site routes and `/api` do not collide with the tunnel system
+- Bilingual admin/dashboard UI with English as the primary language and Thai as an optional switch
+- Bilingual desktop GUI client with clearer onboarding copy and mandatory saved server profile
+- Safer admin bootstrap behavior: if `DASHBOARD_PASSWORD` is empty, a random bootstrap password is generated and written under `DATA_DIR`
+- Dual database support: SQLite, MySQL, or both with optional mirror sync
+- Remembered custom host labels for HTTP tunnels, plus server-side availability checking before the tunnel starts
+- Updated client onboarding flow so users save `--server` and `--token` once instead of repeating them on every command
 
 ## Architecture
 
-### HTTP Tunnels
+PrivateTunnel uses three internal ports:
 
-```
-Browser ──HTTPS──> Nginx (SSL termination, wildcard *.ex.example.com)
-    │
-    ├── /ws         ──> Port 8080  WebSocket tunnel connections
-    ├── /api/*      ──> Port 8081  Dashboard API
-    ├── /dashboard  ──> Port 8081  Dashboard Web UI
-    └── /           ──> Port 8082  HTTP proxy (tunnel traffic)
-                          │
-                    Subdomain routing
-                    abc123.ex.example.com → lookup WebSocket for "abc123"
-                          │
-                    ┌─────────────┐
-                    │  WebSocket  │  Single connection per client
-                    │  Multiplex  │  Multiple concurrent requests via requestId
-                    └──────┬──────┘
-                           │
-                    Client (ptunnel)
-                           │
-                    localhost:3000
+- `WS_PORT` for tunnel client WebSocket connections
+- `DASHBOARD_PORT` for the admin UI and admin API
+- `PROXY_PORT` for public HTTP tunnel traffic
+
+Recommended external layout behind Nginx:
+
+```text
+Internet
+  |
+  +-- https://ex.example.com/_private-tunnel/admin   -> Dashboard
+  +-- wss://ex.example.com/_private-tunnel/ws        -> Tunnel client WebSocket
+  +-- https://*.app.ex.example.com                   -> HTTP tunnels
+  +-- https://demo.ex.example.com                    -> Optional exact-root HTTP tunnels
+  +-- tcp://games.ex.example.com:30001+             -> TCP tunnels (direct, not through Nginx)
 ```
 
-### TCP Tunnels
+Control-plane routes are isolated under `/_private-tunnel`:
 
-```
-TCP Client ──> Server:30001 (direct, bypasses Nginx)
-                    │
-              net.Server on allocated port
-                    │
-              WebSocket (same connection, FRAME_TCP_DATA frames)
-                    │
-              Client (ptunnel)
-                    │
-              localhost:25565
-```
+- Admin UI: `/_private-tunnel/admin`
+- Admin API: `/_private-tunnel/admin/api/*`
+- Admin live updates: `/_private-tunnel/admin/live`
+- Client WebSocket: `/_private-tunnel/ws`
 
-TCP tunnels bypass Nginx entirely and connect directly to the allocated port. The server auto-manages firewall rules when run with admin/root privileges.
-
----
+The legacy client WebSocket path `/ws` is still accepted by the server for compatibility, but all current examples use `/_private-tunnel/ws`.
 
 ## Project Structure
 
-```
+```text
 PrivateTunnel/
-├── package.json              # Dependencies + Electron build config
-├── .gitignore
-├── README.md
-│
-├── shared/
-│   └── protocol.js           # Wire protocol — message types, binary frame encoding
-│
-├── server/
-│   ├── index.js              # Entry point — starts 3 HTTP servers (8080, 8081, 8082)
-│   ├── tunnel-manager.js     # Core — maps subdomains to WebSocket connections
-│   ├── subdomain.js          # Random 8-char hex subdomain generation
-│   ├── proxy.js              # HTTP-to-WebSocket proxy — forwards browser requests
-│   ├── dashboard.js          # Dashboard API + Web UI with authentication
-│   ├── landing.js            # Landing page for the root domain
-│   ├── firewall.js           # Auto firewall open/close (Windows/Linux)
-│   └── db.js                 # SQLite database — clients, request logs, config
-│
-├── client/
-│   ├── bin/ptunnel.js        # CLI entry point (#!/usr/bin/env node)
-│   ├── tunnel-client.js      # WebSocket client + HTTP/TCP multiplexer
-│   ├── local-forwarder.js    # Forwards HTTP requests to localhost:PORT
-│   └── ui.js                 # Terminal UI (ANSI escape codes)
-│
-├── app/                      # Electron desktop app
-│   ├── main.js               # Main process — window, tray, IPC handlers
-│   ├── preload.js            # Context bridge — safe renderer API
-│   └── renderer/
-│       ├── index.html        # App shell
-│       ├── style.css         # Dark theme UI
-│       └── app.js            # UI logic — tunnels, presets, guide
-│
-└── data/
-    └── tunnel.db             # SQLite database (auto-created, gitignored)
+├── app/                    # Electron desktop client
+├── client/                 # CLI client and tunnel runtime
+├── server/                 # Server, dashboard, routing, database
+├── shared/                 # Wire protocol
+├── data/                   # Runtime data (gitignored)
+├── .env.example
+├── package.json
+└── README.md
 ```
 
----
+Important server files:
 
-## Prerequisites
+- `server/index.js`: boots WebSocket, dashboard, and proxy services
+- `server/dashboard.js`: admin UI, admin API, snippets, bilingual dashboard
+- `server/db.js`: SQLite/MySQL storage and config bootstrap logic
+- `server/routing.js`: route/domain normalization and runtime route generation
+- `server/tunnel-manager.js`: tunnel assignment, remembered host logic, preview validation
 
-- **Node.js** 18+ (tested on v22)
-- **npm**
-- **Nginx** (on server, for SSL termination and HTTP routing)
-- A **domain** with wildcard DNS (e.g., `*.ex.example.com`)
-- **SSL certificate** covering the wildcard domain
+Important client files:
 
----
+- `client/bin/ptunnel.js`: CLI onboarding and tunnel commands
+- `client/tunnel-client.js`: runtime client for HTTP and TCP tunnels
+- `client/server-url.js`: default control path normalization
+- `app/main.js`: desktop app main process and secure IPC bridge
+- `app/renderer/*`: bilingual desktop UI
+
+## Requirements
+
+- Node.js 18+
+- npm
+- Nginx on the server
+- One or more domains pointed at the server
+- TLS certificates for the domains you publish
+- MySQL if you want MySQL as the primary backend
 
 ## Installation
 
@@ -154,298 +105,337 @@ cd private-tunnel
 npm install
 ```
 
-### Register global `ptunnel` command (optional)
+Optional global CLI install:
 
 ```bash
 npm link
 ```
 
----
-
-## Server Setup
-
-### Start the server
+Start the server:
 
 ```bash
-# Normal
 node server/index.js
-
-# With auto firewall management for TCP tunnels (recommended)
-# Windows: Run as Administrator
-# Linux/macOS:
-sudo node server/index.js
 ```
 
-If the server is not running with admin/root privileges, a warning is shown at startup:
-```
-[Firewall] WARNING: Not running as admin/root — TCP firewall rules will NOT be added automatically.
-[Firewall]          To enable auto firewall: Run as Administrator
-```
+For TCP tunnel firewall automation, run with elevated privileges:
 
-TCP tunnels still work without admin, but you must open the port range manually.
+- Windows: run as Administrator
+- Linux/macOS: run with `sudo`
 
-### Using PM2 (recommended for production)
+## Environment Variables
 
-```bash
-npm install -g pm2
-# Run as Administrator (Windows) or root (Linux)
-pm2 start server/index.js --name ptunnel
-pm2 save
-pm2 startup   # Auto-start on boot
-```
+The server reads `.env` on startup, then stores hoster settings in the database. On first boot, `.env` seeds the database. After that, the admin UI becomes the main place to manage domains, control route, and tunnel token.
 
-### Environment Variables
+### Core network settings
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `WS_PORT` | `8080` | WebSocket server port |
-| `DASHBOARD_PORT` | `8081` | Dashboard server port |
-| `PROXY_PORT` | `8082` | HTTP proxy port |
-| `DOMAIN` | *(required)* | Base domain (e.g. `ex.example.com`) |
-| `TUNNEL_TOKEN` | *(empty)* | Secret token clients must present to connect. Leave empty to allow anyone. |
-| `DASHBOARD_PASSWORD` | `AdminTunnel1234` | Dashboard login password |
-| `DB_PATH` | `./data/tunnel.db` | SQLite database path |
-| `TCP_PORT_MIN` | `30000` | Start of TCP tunnel port range |
-| `TCP_PORT_MAX` | `40000` | End of TCP tunnel port range |
+| --- | --- | --- |
+| `WS_PORT` | `8080` | Internal WebSocket server port for tunnel clients |
+| `DASHBOARD_PORT` | `8081` | Internal dashboard/admin API port |
+| `PROXY_PORT` | `8082` | Internal public HTTP proxy port |
+| `PRIMARY_DOMAIN` | empty | Main control-plane domain for the admin UI and default client WebSocket |
+| `TUNNEL_DOMAIN` | empty | Optional legacy/default publish domain used during initial bootstrap |
+| `TUNNEL_TOKEN` | empty | Client access secret. Leave empty only for fully open/private test setups |
+| `DASHBOARD_PASSWORD` | empty | Optional explicit admin password. If empty, a random bootstrap password is generated |
+| `DATA_DIR` | `./data` | Runtime data directory |
+| `TCP_PORT_MIN` | `30000` | First TCP tunnel port |
+| `TCP_PORT_MAX` | `40000` | Last TCP tunnel port |
 
-### Tunnel Authentication
+### Database settings
 
-Set `TUNNEL_TOKEN` in `.env` to prevent unauthorized clients from creating tunnels:
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DB_PROVIDER` | `mysql` | Primary backend: `mysql` or `sqlite` |
+| `DB_SYNC_TARGETS` | empty | Optional mirror backends, comma-separated, for example `sqlite` or `mysql,sqlite` |
+| `DB_SYNC_STRICT` | `false` | When `true`, mirror write failures also fail the main request |
+| `DB_BOOTSTRAP_SYNC` | `true` | Auto-seed empty backends from the first backend that already has data |
+| `SQLITE_PATH` | `./data/tunnel.db` | SQLite file path |
+| `MYSQL_HOST` | `127.0.0.1` | MySQL host |
+| `MYSQL_PORT` | `3306` | MySQL port |
+| `MYSQL_USER` | `privatetunnel` in `.env.example` | MySQL username |
+| `MYSQL_PASSWORD` | empty | MySQL password |
+| `MYSQL_DATABASE` | `privatetunnel` | Database name |
+| `DB_PATH` | alias | Backward-compatible alias for old SQLite-only installs |
 
-```bash
-# Generate a strong random token
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
+### Example `.env`
 
 ```env
-TUNNEL_TOKEN=a3f8c2e1d4b7...   # paste generated value here
+WS_PORT=8080
+DASHBOARD_PORT=8081
+PROXY_PORT=8082
+
+PRIMARY_DOMAIN=ex.example.com
+TUNNEL_DOMAIN=tunnel.ex.example.com
+TUNNEL_TOKEN=replace-with-a-real-secret
+DASHBOARD_PASSWORD=
+
+DB_PROVIDER=mysql
+DB_SYNC_TARGETS=sqlite
+DB_SYNC_STRICT=false
+DB_BOOTSTRAP_SYNC=true
+
+SQLITE_PATH=./data/tunnel.db
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=privatetunnel
+MYSQL_PASSWORD=change-me
+MYSQL_DATABASE=privatetunnel
 ```
 
-Clients then supply the token on first connect:
-```bash
-ptunnel http 3000 --token a3f8c2e1d4b7...
+## Database Modes
+
+PrivateTunnel supports three practical setups:
+
+### 1. SQLite only
+
+```env
+DB_PROVIDER=sqlite
+DB_SYNC_TARGETS=
 ```
 
-The token is saved to `~/.ptunnel` and used automatically on subsequent runs. In the desktop app, enter it in the **Setup** screen or **Settings** panel.
+Good for small single-host setups.
 
----
+### 2. MySQL only
 
-## Client Usage
-
-```bash
-# HTTP tunnel → https://{id}.your-domain.com
-ptunnel http 3000
-ptunnel http localhost:3000
-
-# TCP tunnel → your-domain.com:PORT
-ptunnel tcp 25565      # Minecraft
-ptunnel tcp 22         # SSH
-ptunnel tcp 3306       # MySQL
-
-# Shorthand (defaults to HTTP)
-ptunnel 3000
-
-# First run — save server URL
-ptunnel http 3000 --server wss://your-domain.com/ws
-
-# Subsequent runs — URL is remembered
-ptunnel http 3000
-
-# Help
-ptunnel --help
+```env
+DB_PROVIDER=mysql
+DB_SYNC_TARGETS=
 ```
 
-### Client Identity
+Recommended for production and larger installs.
 
-On first run, a unique `clientId` (UUID) is generated and saved to `~/.ptunnel`. This ensures the same subdomain is assigned on reconnect.
+### 3. MySQL primary with SQLite mirror
 
-```json
-~/.ptunnel → {"clientId": "a1b2c3d4-...", "serverUrl": "wss://your-domain.com/ws"}
+```env
+DB_PROVIDER=mysql
+DB_SYNC_TARGETS=sqlite
+DB_BOOTSTRAP_SYNC=true
 ```
 
----
+Useful during migration or when you want a local mirror.
 
-## Pre-built Binaries
+### Migration notes
 
-Build standalone CLI executables (no Node.js required on client):
+- Schema creation is automatic on startup for both backends.
+- Missing columns and indexes are added automatically.
+- Empty backends can be bootstrapped from a backend that already has data when `DB_BOOTSTRAP_SYNC=true`.
+- This means older SQLite installs can be moved toward MySQL without a separate manual migration script, as long as both backends are configured and the server is started with sync enabled.
 
-```bash
-npm run build          # All platforms
-npm run build:win      # Windows x64  → dist/ptunnel-win.exe
-npm run build:linux    # Linux x64    → dist/ptunnel-linux
-npm run build:macos    # macOS x64    → dist/ptunnel-macos
-npm run build:macos-arm # macOS ARM64 → dist/ptunnel-macos-arm64 (run on macOS/Linux only)
+## First Boot
+
+On first startup:
+
+1. The configured database schema is created or upgraded.
+2. `PRIMARY_DOMAIN`, `TUNNEL_DOMAIN`, `TUNNEL_TOKEN`, and the default control root are seeded into the database if missing.
+3. If `DASHBOARD_PASSWORD` is set, it is hashed and stored.
+4. If `DASHBOARD_PASSWORD` is empty, PrivateTunnel generates a random bootstrap password and writes it to:
+
+```text
+<DATA_DIR>/admin-bootstrap.txt
 ```
 
-Usage on Linux/macOS:
-```bash
-chmod +x ptunnel-linux
-./ptunnel-linux http 3000 --server wss://your-domain.com/ws
+Rotate that password from the admin UI after the first successful login.
+
+## Admin Dashboard
+
+Default admin URL:
+
+```text
+https://ex.example.com/_private-tunnel/admin
 ```
 
-> Pre-built binaries are distributed via [GitHub Releases](https://github.com/Jindanet/private-tunnel/releases).
+The dashboard is designed for the server owner, not tunnel end-users.
 
----
+What the dashboard manages:
 
-## Desktop App
+- Primary domain and control namespace
+- Tunnel token
+- Publish domains
+- Admin password rotation
+- Active tunnels
+- Known clients
+- Recent request logs
+- Generated DNS/client/Nginx snippets
 
-PrivateTunnel includes an Electron-based desktop GUI for non-developer users — no terminal required.
+### Publish domains
 
-![Desktop App](https://raw.githubusercontent.com/Jindanet/private-tunnel/main/app/renderer/preview.png)
+Each publish domain can independently allow:
 
-### Features
+- Random or remembered subdomains
+- Exact root publishing
 
-- **One-click tunnels** — Start/stop HTTP and TCP tunnels with a single click
-- **Port presets** — Built-in suggestions for common services (Minecraft, Vite, React, SSH, MySQL...)
-- **Persistent config** — Tunnels are saved and restored on next launch
-- **Live request log** — See incoming requests in real-time per tunnel
-- **System tray** — Minimizes to tray, stays running in the background
-- **Setup guide** — Step-by-step instructions for Website, Game Server, and SSH use cases
+Examples:
 
-### Build Desktop App
+- `app.ex.example.com` with `allowSubdomain=true`, `allowRoot=false`
+- `demo.ex.example.com` with `allowSubdomain=true`, `allowRoot=true`
+- `games.ex.example.com` for TCP address branding
 
-```bash
-npm run build:app:win    # Windows → dist-app/win-unpacked/PrivateTunnel.exe
-npm run build:app:linux  # Linux   → dist-app/*.AppImage
-npm run build:app:mac    # macOS   → dist-app/*.dmg
-```
-
-> **Windows build note:** Requires Developer Mode enabled (Settings → System → For Developers → Developer Mode ON) to allow symlink creation during packaging.
-
-### Project Structure (App)
-
-```
-app/
-├── main.js          # Electron main process — IPC, tray, window lifecycle
-├── preload.js       # Context bridge — exposes safe API to renderer
-└── renderer/
-    ├── index.html   # App shell — views, panels, guide tabs
-    ├── style.css    # Dark theme UI styles
-    └── app.js       # UI logic — tunnel cards, presets, status handling
-```
-
-> Desktop app downloads are available in [GitHub Releases](https://github.com/Jindanet/private-tunnel/releases).
-
----
-
-## TCP Firewall Management
-
-When a TCP tunnel is opened, the server automatically:
-1. Finds a free port in `TCP_PORT_MIN`–`TCP_PORT_MAX` (skips ports in use by other processes)
-2. Opens the firewall rule for that port
-3. Closes the firewall rule when the client disconnects
-
-| Platform | Firewall Command |
-|----------|-----------------|
-| Windows | `netsh advfirewall firewall add/delete rule` |
-| Linux | `ufw allow/delete` → fallback `iptables` |
-| macOS | Not needed (app-based firewall) |
-
-**Requires admin/root.** Without it, auto-firewall is skipped and a warning is shown.
-
-Manual firewall (Windows, open range once):
-```powershell
-netsh advfirewall firewall add rule name="PTunnel TCP" dir=in action=allow protocol=TCP localport=30000-40000
-```
-
----
-
-## Dashboard
-
-Access at `https://your-domain.com/dashboard`
-
-### Authentication
-- Password set via `DASHBOARD_PASSWORD` in `.env`
-- Session-based (cookie, 24-hour TTL)
-
-### Dashboard Tabs
-
-**Active Tunnels:**
-- Subdomain, Client IP, Hostname, OS, Port, Tunnel type (HTTP/TCP)
-- Request count, Bytes In/Out
-- Recent requests per tunnel
-
-**Request Logs:**
-- Full history stored in SQLite (auto-cleanup after 7 days)
-
-**All Clients:**
-- All registered clients (even offline)
+The primary control-plane domain root is reserved for the admin/control plane. Root publishing on the primary domain is automatically disabled.
 
 ### Dashboard API
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/status` | Server status, uptime, memory, tunnel count |
-| `GET /api/tunnels` | Active tunnels with details |
-| `GET /api/clients` | All registered clients from DB |
-| `GET /api/logs` | Recent 200 request logs |
-| `GET /api/logs/:subdomain` | Logs + stats for a specific subdomain |
+Key endpoints:
 
----
+- `GET /_private-tunnel/admin/api/overview`
+- `GET /_private-tunnel/admin/api/clients`
+- `GET /_private-tunnel/admin/api/logs`
+- `POST /_private-tunnel/admin/api/settings`
+- `POST /_private-tunnel/admin/api/password`
 
-## DNS & SSL Configuration
+These live under the admin namespace so they do not collide with your public website `/api` routes.
 
-### The Problem
+## Client CLI
 
-We use **Cloudflare** for DNS. The tunnel system requires wildcard subdomains (`*.ex.example.com`). However:
+The CLI now uses a two-step onboarding flow.
 
-- **Cloudflare Free plan** does NOT issue SSL certificates for wildcard subdomains
-- **Cloudflare Origin Certificate** only works when traffic passes through Cloudflare proxy (orange cloud)
-- Wildcard proxy requires **Cloudflare Pro** ($20/month)
+### Step 1. Save the server profile once
 
-### The Solution: Let's Encrypt + DNS Only
-
-Use **Let's Encrypt** wildcard certificates with DNS-01 validation, bypassing Cloudflare's SSL entirely.
-
-#### Step 1: Cloudflare DNS Records (DNS Only / Grey Cloud)
-
-```
-Type    Name    Content         Proxy Status
-A       iam     168.x.x.x      DNS Only (grey)
-A       *.iam   168.x.x.x      DNS Only (grey)
+```bash
+ptunnel init --server wss://ex.example.com/_private-tunnel/ws --token YOUR_TOKEN
 ```
 
-**Important:** Both records must be **DNS Only** (grey cloud).
+Equivalent setup form:
 
-#### Step 2: Obtain Wildcard Certificate (Windows — win-acme)
-
-```powershell
-wacs.exe
+```bash
+ptunnel --server wss://ex.example.com/_private-tunnel/ws --token YOUR_TOKEN
 ```
 
-Interactive setup:
-1. `M` — Create certificate (full options)
-2. `2` — Manual input
-3. Host: `ex.example.com,*.ex.example.com`
-4. `4` — Single certificate
-5. `6` — DNS-01 manual validation
-6. `2` — RSA key
-7. `2` — PEM encoded files
-8. Path: `/path/to/nginx/ssl`
-9. Password: `1` — None
-10. Additional store: `5` — No
-11. Installation: `3` — No
+This stores the server URL and token in the client config file:
 
-During validation, create TXT records at `_acme-challenge.ex.example.com` in Cloudflare (two rounds).
-
-Output files:
-```
-ex.example.com-chain.pem      # Full chain
-ex.example.com-key.pem        # Private key
+```text
+~/.ptunnel
 ```
 
----
+Useful commands:
 
-## Nginx Configuration
-
-### SSL Configuration (`ssl_tunnel.conf`)
-
-```nginx
-ssl_certificate     /path/to/nginx/ssl/ex.example.com-chain.pem;
-ssl_certificate_key /path/to/nginx/ssl/ex.example.com-key.pem;
+```bash
+ptunnel status
+ptunnel reset
 ```
 
-### Site Configuration
+### Step 2. Use short tunnel commands
+
+```bash
+ptunnel http 3000
+ptunnel tcp 25565
+ptunnel 8080
+```
+
+Optional publish-domain flags:
+
+```bash
+ptunnel http 3000 --domain app.ex.example.com
+ptunnel http 3000 --domain demo.ex.example.com --root
+```
+
+Important behavior:
+
+- `--server` and `--token` are now setup-only inputs
+- The CLI refuses to mix `--server` or `--token` with a tunnel command in the same call
+- The server profile must exist before a tunnel can start
+- The saved profile is normalized to the default `/_private-tunnel/ws` path if you provide only a hostname
+
+## Desktop GUI
+
+The desktop app is the friendliest client for non-technical users.
+
+Current desktop app behavior:
+
+- Requires a saved server profile before any tunnel can be created
+- Bilingual UI with English as the default language and Thai as an optional switch
+- Clear setup screen for server WebSocket URL and token
+- Reusable tunnel profiles for HTTP and TCP
+- Optional publish domain selection
+- Optional remembered custom host label with server-side availability checking
+- One-click start and stop
+- Per-tunnel recent activity preview
+
+Build the desktop app:
+
+```bash
+npm run build:app:win
+npm run build:app:linux
+npm run build:app:mac
+```
+
+Run in development:
+
+```bash
+npm run app
+```
+
+### Troubleshooting Build Errors
+
+If you encounter errors during the build process, follow these steps:
+
+#### 1. Native Module Build Error (EPERM)
+
+If you see an error like:
+```
+⨯ [Error: EPERM: operation not permitted, unlink '...\better-sqlite3\build\Release\better_sqlite3.node']
+```
+
+**Solution:**
+```bash
+# Remove the locked file
+rm -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
+
+# Try building again
+npm run build:app:win
+```
+
+#### 2. Code Signing Tools Error (Symbolic Links)
+
+If you see errors about creating symbolic links during code signing:
+```
+ERROR: Cannot create symbolic link : A required privilege is not held by the client
+```
+
+**Solution:**
+```bash
+# The app actually built successfully! The error only affects the final ZIP creation.
+# Your unpacked app is available at: dist-app/win-unpacked/PrivateTunnel.exe
+
+# Create the distribution ZIP manually:
+cd dist-app
+powershell Compress-Archive -Path "win-unpacked\*" -DestinationPath "PrivateTunnel-win-x64.zip" -Force
+
+# Your distribution is ready at: dist-app/PrivateTunnel-win-x64.zip
+```
+
+#### 3. Alternative: Build without Code Signing
+
+To avoid code signing errors entirely, you can disable signing in `package.json`:
+
+```json
+"win": {
+  "target": [{"target": "zip", "arch": ["x64"]}],
+  "signingHashAlgorithms": [],
+  "sign": null
+}
+```
+
+Then build normally and manually create the ZIP if needed.
+
+#### 4. Run as Administrator (Windows)
+
+For persistent build issues, try running your terminal as Administrator before building.
+
+## Nginx Setup
+
+PrivateTunnel no longer tries to manage Nginx for you. Instead, the dashboard provides setup guidance and examples. This keeps the app from rewriting unrelated Nginx configuration on the host.
+
+The key rule is:
+
+- Reserve `/_private-tunnel/*` for the control plane
+- Send all normal public tunnel traffic to the proxy server
+- Keep your site-specific SSL includes under your own Nginx layout
+
+### Why the dedicated control namespace matters
+
+Older `/api` or `/dashboard` style paths can collide with real applications behind the tunnel. Using `/_private-tunnel/*` avoids that conflict.
+
+### Example 1. Control plane + subdomain publishing
 
 ```nginx
 map $http_upgrade $connection_upgrade {
@@ -455,186 +445,162 @@ map $http_upgrade $connection_upgrade {
 
 server {
     listen 80;
-    server_name ex.example.com *.ex.example.com;
+    server_name ex.example.com *.app.ex.example.com;
     return 301 https://$host$request_uri;
 }
 
 server {
-    listen 443 ssl;
-    server_name ex.example.com *.ex.example.com;
+    listen 443 ssl http2;
+    server_name ex.example.com *.app.ex.example.com;
 
-    include /path/to/nginx/conf/ssl_tunnel.conf;
+    include C:/path/to/your-own-ssl/ex.example.com.conf;
 
-    location /ws {
+    location ^~ /_private-tunnel/ {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+
+    location = /_private-tunnel/ws {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        "upgrade";
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_read_timeout  86400;
-        proxy_send_timeout  86400;
-    }
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:8081;
-        proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-    }
-
-    location /dashboard {
-        proxy_pass http://127.0.0.1:8081;
-        proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
     }
 
     location / {
         proxy_pass http://127.0.0.1:8082;
         proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        $connection_upgrade;
-        proxy_buffering        off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
         proxy_request_buffering off;
-        proxy_connect_timeout  180s;
-        proxy_read_timeout     180s;
     }
 }
 ```
 
-**Note:** TCP tunnel ports (30000–40000) bypass Nginx entirely — clients connect directly to the server IP.
+### Example 2. Exact root publish domain
 
----
+This is for a domain that should publish directly at the root, such as `demo.ex.example.com`.
 
-## Problems Encountered & Solutions
+```nginx
+server {
+    listen 80;
+    server_name demo.ex.example.com;
+    return 301 https://$host$request_uri;
+}
 
-### 1. Cloudflare Free Plan — No Wildcard SSL
+server {
+    listen 443 ssl http2;
+    server_name demo.ex.example.com;
 
-**Problem:** `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` on wildcard subdomains.
+    include C:/path/to/your-own-ssl/demo.ex.example.com.conf;
 
-**Solution:** Let's Encrypt wildcard certificate via win-acme with manual DNS-01 validation. DNS records set to DNS Only (grey cloud).
+    location / {
+        proxy_pass http://127.0.0.1:8082;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+}
+```
 
-### 2. Nginx `ssl.conf` Conflict
+### Example 3. TCP publishing
 
-**Problem:** `"ssl_ciphers" directive is duplicate` — tunnel SSL config conflicted with other services.
+TCP tunnels do not pass through Nginx. The server returns addresses like:
 
-**Solution:** Created a separate `ssl_tunnel.conf` with only certificate paths. TLS protocols/ciphers inherited from main nginx config.
+```text
+games.ex.example.com:30001
+games.ex.example.com:30002
+```
 
-### 3. Nginx `$connection_upgrade` Variable Unknown
+Open the configured TCP port range on your firewall.
 
-**Problem:** `nginx -t` failed with `unknown "connection_upgrade" variable`.
+## DNS and TLS
 
-**Solution:** Add `map` block at the `http` level (outside all `server` blocks).
+Suggested DNS records:
 
-### 4. DNS Cache — `DNS_PROBE_FINISHED_NXDOMAIN`
+```text
+A     ex.example.com           -> <your-server-ip>
+A     *.app.ex.example.com     -> <your-server-ip>
+A     demo.ex.example.com      -> <your-server-ip>
+A     games.ex.example.com     -> <your-server-ip>
+```
 
-**Problem:** DNS resolved on other machines but not locally after Cloudflare update.
+### Win-acme workflow on Windows
 
-**Solution:** `ipconfig /flushdns` + change DNS to Google `8.8.8.8`.
+If you manage certificates with win-acme:
 
-### 5. WebSocket `ws://` vs `wss://`
+1. Run `wacs.exe`
+2. Create certificates for each hostname or wildcard you plan to publish
+3. Export PEM files
+4. Keep your own SSL include files per domain
+5. Reference those include files from your Nginx vhosts
 
-**Problem:** Protocol mismatch caused silent connection failures.
+PrivateTunnel only generates guidance and examples. It does not replace your existing SSL include layout.
 
-**Solution:** Use `wss://` in production (behind nginx SSL), `ws://` for local dev.
+## Security Notes
 
-### 6. UI Rendering Flat on Windows
-
-**Problem:** ANSI `\x1b[2J` (clear screen) didn't work on Windows Terminal — all output appeared on one line.
-
-**Solution:** Switched to per-line cursor movement (`MOVE_UP` + `CLEAR_LINE`) and `\r\n` line endings on Windows.
-
-### 7. SQLite Schema Migration
-
-**Problem:** `table clients has no column named ip` after schema update.
-
-**Solution:** Delete `data/tunnel.db` and restart — schema is recreated automatically.
-
-### 8. TCP Firewall on Non-Admin Process
-
-**Problem:** `netsh`/`iptables` fail silently when server runs without admin/root.
-
-**Solution:** Detect elevation at startup and print a clear warning. TCP tunnels still work if firewall rules are pre-configured manually.
-
----
+- Always set a strong `TUNNEL_TOKEN`
+- Rotate the bootstrap admin password after first login
+- Keep the admin UI behind TLS
+- Do not publish the control-plane namespace through unrelated reverse proxies
+- Root publishing on the primary control domain is intentionally blocked
 
 ## Wire Protocol
 
-All communication happens over a single WebSocket connection per client.
+Control messages are JSON text frames over one WebSocket per client. Binary frames carry HTTP body chunks or TCP stream data.
 
-### Control Messages (JSON text frames)
+Main message families:
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `tunnel:open` | Client → Server | Request a tunnel (includes `tunnelType`, clientId, hostname, OS) |
-| `tunnel:assigned` | Server → Client | Tunnel created (subdomain, URL, tcpPort if TCP) |
-| `tunnel:close` | Client → Server | Graceful disconnect |
-| `request:start` | Server → Client | Incoming HTTP request (method, path, headers) |
-| `response:start` | Client → Server | HTTP response metadata (statusCode, headers) |
-| `stream:end` | Both | Stream complete for a requestId |
-| `stream:error` | Both | Error for a requestId |
-| `tcp:connect` | Server → Client | New TCP connection arrived (connId) |
-| `tcp:close` | Both | TCP connection closed (connId) |
-| `ping` / `pong` | Both | Keepalive (every 30s) |
+- `tunnel:open`
+- `tunnel:assigned`
+- `tunnel:check`
+- `tunnel:check-result`
+- `request:start`
+- `response:start`
+- `stream:end`
+- `stream:error`
+- `tcp:connect`
+- `tcp:close`
+- `ping`
+- `pong`
 
-### Data Frames (Binary WebSocket frames)
+See `shared/protocol.js` for the canonical message list.
 
+## Development Scripts
+
+```bash
+npm run server
+npm run client
+npm run app
+npm run build:win
+npm run build:linux
+npm run build:macos
+npm run build:app:win
 ```
-[1 byte: frame type] [16 bytes: ID (UUID)] [N bytes: data chunk]
-
-Frame types:
-  0x01 = HTTP request body   (Server → Client)
-  0x02 = HTTP response body  (Client → Server)
-  0x03 = TCP data            (Both directions, keyed by connId)
-```
-
----
-
-## Database Schema
-
-SQLite database at `data/tunnel.db`:
-
-### `clients`
-| Column | Type | Description |
-|--------|------|-------------|
-| client_id | TEXT PK | UUID from client's `~/.ptunnel` |
-| subdomain | TEXT UNIQUE | Assigned 8-char hex subdomain |
-| ip | TEXT | Client's public IP |
-| hostname | TEXT | Client's OS hostname |
-| os | TEXT | Client's OS info |
-| created_at | TEXT | First connection time |
-| last_seen | TEXT | Last connection time |
-
-### `request_logs`
-| Column | Type | Description |
-|--------|------|-------------|
-| subdomain | TEXT | Which tunnel |
-| visitor_ip | TEXT | Browser/visitor IP |
-| method | TEXT | GET, POST, etc. |
-| path | TEXT | Request path |
-| status_code | INTEGER | HTTP response status |
-| latency_ms | INTEGER | Round-trip time |
-| created_at | TEXT | Timestamp |
-
-Logs are auto-cleaned after 7 days.
-
-### `config`
-| Column | Type | Description |
-|--------|------|-------------|
-| key | TEXT PK | Config key |
-| value | TEXT | Config value (dashboard password stored as SHA-256 hash) |
-
----
 
 ## License
 
 MIT
-
----
-
-Built by [Jindanet](https://github.com/Jindanet)

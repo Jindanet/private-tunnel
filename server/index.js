@@ -6,101 +6,165 @@ const { handleProxy } = require('./proxy');
 const { createDashboard } = require('./dashboard');
 const { getLandingHTML } = require('./landing');
 const { warnIfNotElevated } = require('./firewall');
+const {
+  initDatabase,
+  getServerSettings,
+  getBootstrapPasswordFilePath,
+  isUsingLegacyDefaultPassword,
+} = require('./db');
+const { buildRuntimeRoutes, isExactHost, matchManagedHttpHost, normalizeDomain } = require('./routing');
 
 warnIfNotElevated();
 
 const WS_PORT = process.env.WS_PORT || 8080;
 const DASHBOARD_PORT = process.env.DASHBOARD_PORT || 8081;
 const PROXY_PORT = process.env.PROXY_PORT || 8082;
-const DOMAIN = process.env.DOMAIN;
-const TUNNEL_TOKEN = process.env.TUNNEL_TOKEN || null;
+const runtimeConfig = {};
 
-if (!DOMAIN) {
-  console.error('[Server] ERROR: DOMAIN environment variable is required. Set it in .env file.');
-  process.exit(1);
+async function refreshRuntimeConfig() {
+  const settings = await getServerSettings();
+  Object.assign(runtimeConfig, settings, buildRuntimeRoutes(settings));
+  return runtimeConfig;
 }
 
-if (!TUNNEL_TOKEN) {
-  console.warn('[Auth] WARNING: TUNNEL_TOKEN is not set — server is open to anyone. Set TUNNEL_TOKEN in .env to require authentication.');
-} else {
-  console.log('[Auth] Token authentication enabled.');
+function isLandingHost(hostname) {
+  const host = normalizeDomain(hostname);
+  if (!host) return true;
+  if (isExactHost(host, runtimeConfig.primaryDomain)) return true;
+
+  const publishDomains = Array.isArray(runtimeConfig.publishDomains) ? runtimeConfig.publishDomains : [];
+  return publishDomains.some((entry) => isExactHost(host, entry.domain));
 }
 
-const tunnelManager = new TunnelManager(DOMAIN);
+async function main() {
+  await initDatabase();
+  await refreshRuntimeConfig();
 
-// ─────────────────────────────────────────────
-// Port 8080 — WebSocket server for tunnel clients
-// ─────────────────────────────────────────────
-const wsServer = http.createServer((req, res) => {
-  res.writeHead(426, { 'Content-Type': 'text/plain' });
-  res.end('WebSocket upgrade required');
-});
+  if (!runtimeConfig.hasTunnelToken) {
+    console.warn('[Auth] WARNING: Tunnel token is not configured — clients can connect without authentication.');
+  } else {
+    console.log('[Auth] Token authentication enabled.');
+  }
 
-const wss = new WebSocketServer({ server: wsServer, path: '/ws' });
+  if (!runtimeConfig.tunnelDomain) {
+    console.warn('[Server] WARNING: Tunnel domain is not configured yet. Open the admin UI and finish setup before connecting clients.');
+  }
 
-wss.on('connection', (ws, req) => {
-  const ip = req.headers['x-real-ip']
-    || req.headers['cf-connecting-ip']
-    || req.headers['x-forwarded-for']
-    || req.socket.remoteAddress;
+  const bootstrapPasswordFile = getBootstrapPasswordFilePath();
+  if (bootstrapPasswordFile) {
+    console.warn(`[Dashboard] Initial admin password saved to: ${bootstrapPasswordFile}`);
+  }
+  if (await isUsingLegacyDefaultPassword()) {
+    console.warn('[Dashboard] WARNING: This installation is still using the legacy default admin password. Rotate it from the admin UI.');
+  }
 
-  // Token authentication
-  if (TUNNEL_TOKEN) {
+  const tunnelManager = new TunnelManager(runtimeConfig);
+
+  const wsServer = http.createServer((req, res) => {
+    res.writeHead(426, { 'Content-Type': 'text/plain' });
+    res.end('WebSocket upgrade required');
+  });
+
+  const wss = new WebSocketServer({
+    noServer: true,
+    clientTracking: true,
+    perMessageDeflate: false,
+  });
+
+  wsServer.on('upgrade', (req, socket, head) => {
+    let pathname = '';
     try {
-      const urlObj = new URL(req.url, 'http://localhost');
-      const token = urlObj.searchParams.get('token');
-      if (token !== TUNNEL_TOKEN) {
-        console.log(`[Auth] Rejected unauthorized connection from ${ip}`);
-        ws.close(4001, 'Unauthorized: invalid or missing token');
-        return;
-      }
-    } catch {
-      ws.close(4001, 'Unauthorized');
+      pathname = new URL(req.url, 'http://localhost').pathname;
+    } catch {}
+
+    const acceptedPaths = new Set([runtimeConfig.tunnelWsPath, runtimeConfig.legacyTunnelWsPath]);
+    if (!acceptedPaths.has(pathname)) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
       return;
     }
-  }
 
-  console.log(`[WS:8080] Tunnel client connected from ${ip}`);
-  tunnelManager.handleNewClient(ws, ip);
-});
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  });
 
-wsServer.listen(WS_PORT, () => {
-  console.log(`[WS:${WS_PORT}] WebSocket server ready`);
-});
+  wss.on('connection', (ws, req) => {
+    const ip = req.headers['x-real-ip']
+      || req.headers['cf-connecting-ip']
+      || req.headers['x-forwarded-for']
+      || req.socket.remoteAddress;
 
-// ─────────────────────────────────────────────
-// Port 8081 — Dashboard API + UI
-// ─────────────────────────────────────────────
-const dashboardServer = createDashboard(tunnelManager, DOMAIN);
+    if (runtimeConfig.tunnelToken) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        const token = urlObj.searchParams.get('token');
+        if (token !== runtimeConfig.tunnelToken) {
+          console.log(`[Auth] Rejected unauthorized connection from ${ip}`);
+          ws.close(4001, 'Unauthorized: invalid or missing token');
+          return;
+        }
+      } catch {
+        ws.close(4001, 'Unauthorized');
+        return;
+      }
+    }
 
-dashboardServer.listen(DASHBOARD_PORT, () => {
-  console.log(`[Dashboard:${DASHBOARD_PORT}] Dashboard server ready`);
-});
+    console.log(`[WS:8080] Tunnel client connected from ${ip}`);
+    tunnelManager.handleNewClient(ws, ip);
+  });
 
-// ─────────────────────────────────────────────
-// Port 8082 — HTTP proxy (tunnel traffic)
-// ─────────────────────────────────────────────
-const proxyServer = http.createServer((req, res) => {
-  const host = (req.headers.host || '').split(':')[0];
-  const parts = host.split('.');
-  const domainParts = DOMAIN.split('.');
-  const subdomainDepth = parts.length - domainParts.length;
+  wsServer.listen(WS_PORT, () => {
+    console.log(`[WS:${WS_PORT}] WebSocket server ready`);
+  });
 
-  if (subdomainDepth === 1) {
-    const subdomain = parts[0];
-    handleProxy(req, res, subdomain, tunnelManager);
-  } else if (subdomainDepth <= 0) {
-    // Root domain — landing page
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(getLandingHTML(DOMAIN));
-  } else {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not found');
-  }
-});
+  const dashboardServer = createDashboard(tunnelManager, runtimeConfig, {
+    refreshRuntimeConfig,
+    ports: {
+      wsPort: WS_PORT,
+      dashboardPort: DASHBOARD_PORT,
+      proxyPort: PROXY_PORT,
+    },
+  });
 
-proxyServer.listen(PROXY_PORT, () => {
-  console.log(`[Proxy:${PROXY_PORT}] HTTP proxy server ready`);
-  console.log(`[Server] Domain: *.${DOMAIN}`);
-  console.log(`[Server] All services started successfully`);
+  dashboardServer.listen(DASHBOARD_PORT, () => {
+    console.log(`[Dashboard:${DASHBOARD_PORT}] Dashboard server ready`);
+  });
+
+  const proxyServer = http.createServer((req, res) => {
+    const host = normalizeDomain(req.headers.host || '');
+    const managedHost = matchManagedHttpHost(host, runtimeConfig.publishDomains);
+
+    if (managedHost) {
+      handleProxy(req, res, host, tunnelManager);
+    } else if (!runtimeConfig.publishDomains?.length || isLandingHost(host)) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(getLandingHTML(runtimeConfig));
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+    }
+  });
+
+  proxyServer.listen(PROXY_PORT, () => {
+    console.log(`[Proxy:${PROXY_PORT}] HTTP proxy server ready`);
+    if (runtimeConfig.primaryDomain) {
+      console.log(`[Dashboard] Admin URL: https://${runtimeConfig.primaryDomain}${runtimeConfig.adminBasePath}`);
+      console.log(`[Client] WebSocket URL: wss://${runtimeConfig.primaryDomain}${runtimeConfig.tunnelWsPath} (legacy ${runtimeConfig.legacyTunnelWsPath} also accepted)`);
+    } else {
+      console.log(`[Dashboard] Admin URL: http://<server>:${DASHBOARD_PORT}${runtimeConfig.adminBasePath}`);
+    }
+    if (runtimeConfig.publishDomains?.length) {
+      const summary = runtimeConfig.publishDomains
+        .map((entry) => `${entry.domain}${entry.allowSubdomain ? ' [*.subdomain]' : ''}${entry.allowRoot ? ' [root]' : ''}`)
+        .join(', ');
+      console.log(`[Server] Publish domains: ${summary}`);
+    }
+    console.log('[Server] All services started successfully');
+  });
+}
+
+main().catch((error) => {
+  console.error('[Server] Startup failed:', error);
+  process.exit(1);
 });
