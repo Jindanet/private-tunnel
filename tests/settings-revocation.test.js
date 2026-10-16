@@ -264,6 +264,7 @@ async function indexFixture(initialToken) {
       },
     },
     './landing': { getLandingHTML: () => '' },
+    './access-keys': { createAccessKeyStore: () => ({ authenticate: () => null }) },
     './firewall': { warnIfNotElevated: () => {} },
     './db': {
       initDatabase: async () => {},
@@ -281,7 +282,7 @@ async function indexFixture(initialToken) {
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
     require: (name) => Object.hasOwn(modules, name) ? modules[name] : realRequire(name),
     process: {
-      env: { ALLOW_UNAUTHENTICATED_TUNNELS: 'true', ALLOW_LEGACY_QUERY_TOKEN: 'true' },
+      env: { ALLOW_SHARED_TUNNEL_TOKEN: 'true', ALLOW_UNAUTHENTICATED_TUNNELS: 'true', ALLOW_LEGACY_QUERY_TOKEN: 'true' },
       once: () => {},
       exit: (code) => ready.reject(new Error(`Unexpected server exit ${code}`)),
     },

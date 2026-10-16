@@ -14,7 +14,9 @@ const {
   closeDatabase,
 } = require('./db');
 const { buildRuntimeRoutes, isExactHost, matchManagedHttpHost, normalizeDomain } = require('./routing');
-const { authenticateTunnel, isValidTunnelToken, clientIp, createAttemptLimiter, isAdminHost } = require('./security');
+const { isValidTunnelToken, clientIp, createAttemptLimiter, isAdminHost } = require('./security');
+const { createAccessKeyStore } = require('./access-keys');
+const { authenticatePrincipal } = require('./tunnel-identity');
 
 warnIfNotElevated();
 
@@ -22,7 +24,12 @@ const WS_PORT = process.env.WS_PORT || 8080;
 const DASHBOARD_PORT = process.env.DASHBOARD_PORT || 8081;
 const PROXY_PORT = process.env.PROXY_PORT || 8082;
 const INTERNAL_HOST = process.env.INTERNAL_HOST || '127.0.0.1';
-const runtimeConfig = {};
+const runtimeConfig = {
+  requestIdleTimeoutMs: process.env.HTTP_IDLE_TIMEOUT_MS ?? 30000,
+  requireDataTransportV4: process.env.REQUIRE_DATA_TRANSPORT_V4 !== 'false',
+  tcpBindHost: process.env.TCP_BIND_HOST || undefined,
+  tcpVisitorAllowlist: process.env.TCP_VISITOR_ALLOWLIST || '',
+};
 let tunnelWebSockets = null;
 
 async function refreshRuntimeConfig() {
@@ -39,7 +46,9 @@ async function refreshRuntimeConfig() {
   }
   Object.assign(runtimeConfig, settings, buildRuntimeRoutes(settings), { tunnelAuthenticationDisabled: false });
   if (tunnelWebSockets && previousToken !== runtimeConfig.tunnelToken) {
-    for (const ws of tunnelWebSockets.clients) ws.close(4001, 'Access key changed.');
+    for (const ws of tunnelWebSockets.clients) {
+      if (ws.tunnelPrincipal?.kind !== 'client-key') ws.close(4001, 'Access key changed.');
+    }
   }
   return runtimeConfig;
 }
@@ -56,8 +65,13 @@ function isLandingHost(hostname) {
 async function main() {
   await initDatabase();
   await refreshRuntimeConfig();
+  const accessKeyStore = createAccessKeyStore();
+  const allowSharedToken = process.env.ALLOW_SHARED_TUNNEL_TOKEN === 'true';
+  runtimeConfig.sharedTunnelTokenEnabled = allowSharedToken;
 
-  if (!runtimeConfig.tunnelToken && process.env.ALLOW_UNAUTHENTICATED_TUNNELS === 'true') {
+  if (!allowSharedToken) {
+    console.log('[Auth] Per-client keys enabled. Issue a client key from admin Settings. Shared tunnel key authentication is disabled.');
+  } else if (!runtimeConfig.tunnelToken && process.env.ALLOW_UNAUTHENTICATED_TUNNELS === 'true') {
     console.warn('[Auth] WARNING: Tunnel token is not configured — clients can connect without authentication.');
   } else if (!isValidTunnelToken(runtimeConfig.tunnelToken)) {
     console.warn('[Auth] Tunnel connections are disabled until the access key is replaced in admin Settings (32–4096 characters, randomly generated).');
@@ -74,7 +88,7 @@ async function main() {
     console.warn(`[Dashboard] Initial admin password saved to: ${bootstrapPasswordFile}`);
   }
   if (await isUsingLegacyPasswordHash()) {
-    console.warn('[Dashboard] WARNING: This installation uses a legacy password hash. Sign in to upgrade its storage, then rotate the admin password.');
+    console.warn('[Dashboard] WARNING: This installation uses a legacy password hash. Sign in and rotate it before 2027-01-01 UTC; legacy hash sign-in is disabled after that date.');
   }
 
   const tunnelManager = new TunnelManager(runtimeConfig);
@@ -112,11 +126,12 @@ async function main() {
       return;
     }
 
-    if (runtimeConfig.tunnelAuthenticationDisabled || !isAdminHost(req, runtimeConfig.primaryDomain)
-      || !authenticateTunnel(req, runtimeConfig.tunnelToken, {
+    const principal = runtimeConfig.tunnelAuthenticationDisabled ? null : authenticatePrincipal(req, {
+        accessKeyStore, sharedToken: runtimeConfig.tunnelToken, allowShared: allowSharedToken,
         allowLegacyQuery: process.env.ALLOW_LEGACY_QUERY_TOKEN === 'true',
         allowUnauthenticated: process.env.ALLOW_UNAUTHENTICATED_TUNNELS === 'true',
-      })) {
+      });
+    if (!principal || !isAdminHost(req, runtimeConfig.primaryDomain)) {
       socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () => socket.destroy());
       return;
     }
@@ -124,8 +139,14 @@ async function main() {
       socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n', () => socket.destroy());
       return;
     }
+    if (principal.kind === 'client-key'
+      && [...wss.clients].filter((ws) => ws.tunnelPrincipal?.id === principal.id).length >= 16) {
+      socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n', () => socket.destroy());
+      return;
+    }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.tunnelPrincipal = Object.freeze(principal);
       wss.emit('connection', ws, req);
     });
   });
@@ -143,6 +164,14 @@ async function main() {
   });
 
   const dashboardServer = createDashboard(tunnelManager, runtimeConfig, {
+    accessKeyStore,
+    onClientKeyRevoked(id) {
+      for (const ws of wss.clients) {
+        if (ws.tunnelPrincipal?.kind === 'client-key' && ws.tunnelPrincipal.id === id) {
+          ws.close(4001, 'Client key revoked or rotated.');
+        }
+      }
+    },
     refreshRuntimeConfig,
     ports: {
       wsPort: WS_PORT,
@@ -191,6 +220,8 @@ async function main() {
     server.headersTimeout = 15000;
     server.requestTimeout = 30000;
   }
+  // HTTP uploads and responses are bounded by per-stream inactivity, not total duration.
+  proxyServer.requestTimeout = 0;
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return;

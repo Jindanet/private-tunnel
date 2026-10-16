@@ -28,6 +28,13 @@ async function browserRun() {
     await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',...params});
   };
   const pause = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
+  const until = async (predicate) => {
+    for (let attempt=0; attempt<100; attempt+=1) {
+      if (await evaluate(predicate)) return;
+      await pause(30);
+    }
+    assert.fail('The dashboard did not reach the expected state');
+  };
   const capture = async (name) => {
     if (!process.env.PT_ADMIN_CAPTURE_DIR) return;
     await pause();
@@ -95,6 +102,71 @@ async function browserRun() {
     assert.equal(requestMetric.count,'24','The logged-request metric uses real persisted fixture logs');
     assert.match(requestMetric.hint,/7/);
     await capture('admin-preview.png');
+
+    await evaluate(() => document.querySelector('[data-tab="settings"]').click());
+    await until(() => !document.getElementById('clientKeysRefresh').disabled);
+    await evaluate(() => {
+      document.querySelector('[data-lang="en"]').click();
+      document.getElementById('clientKeyName').value='<img src=x onerror="window.keyNameExecuted=true">';
+      document.getElementById('clientKeyForm').requestSubmit();
+    });
+    await until(() => !document.getElementById('clientKeySecretPanel').hidden && !document.getElementById('clientKeyIssue').disabled);
+    const issuedKey = await evaluate(() => ({
+      id:document.querySelector('[data-client-key-id]').dataset.clientKeyId,
+      token:document.getElementById('clientKeySecret').value,
+      masked:document.getElementById('clientKeySecret').type==='password',
+      name:document.querySelector('#clientKeysList strong').textContent,
+      injected:document.querySelectorAll('#clientKeysList img').length,
+      executed:Boolean(window.keyNameExecuted),
+    }));
+    assert.ok(issuedKey.masked && issuedKey.token.startsWith('ptk_'));
+    assert.equal(issuedKey.name,'<img src=x onerror="window.keyNameExecuted=true">');
+    assert.equal(issuedKey.injected,0);
+    assert.equal(issuedKey.executed,false);
+    await capture('admin-client-key-preview.png');
+    await evaluate(() => {
+      document.getElementById('clientKeyShow').click();
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(value)=>{window.copiedClientKey=value;}}});
+      document.getElementById('clientKeyCopy').click();
+    });
+    await until(() => document.getElementById('clientKeyStatus').textContent==='Key copied.');
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecret').type),'text');
+    assert.equal(await evaluate(() => window.copiedClientKey),issuedKey.token);
+    await evaluate(() => {window.copiedClientKey='';document.getElementById('clientKeyDismiss').click();});
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecret').value),'');
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecretPanel').hidden),true);
+    await evaluate(() => document.querySelector('#clientKeysList [data-key-action="rotate"]').click());
+    await until(() => !document.getElementById('clientKeySecretPanel').hidden && !document.getElementById('clientKeyIssue').disabled);
+    assert.notEqual(await evaluate(() => document.getElementById('clientKeySecret').value),issuedKey.token);
+    assert.equal(await evaluate(() => document.querySelector('[data-client-key-id]').dataset.clientKeyId),issuedKey.id);
+    await evaluate(() => document.querySelector('[data-tab="logs"]').click());
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecret').value),'');
+    await evaluate(() => document.querySelector('[data-tab="settings"]').click());
+    await until(() => !document.getElementById('clientKeysRefresh').disabled);
+    await evaluate(() => document.querySelector('#clientKeysList [data-key-action="revoke"]').click());
+    await until(() => !document.getElementById('clientKeyIssue').disabled && document.querySelectorAll('#clientKeysList [data-key-action]').length===0);
+    assert.match(await evaluate(() => document.querySelector('#clientKeysList small').textContent),/^Revoked/);
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecret').value),'');
+
+    await evaluate(() => {
+      const originalFetch=window.fetch;
+      window.fetch=(url,options)=>String(url).endsWith('/client-keys')&&options?.method==='POST'
+        ? originalFetch(url,options).then((response)=>new Promise((resolve)=>{window.releaseClientKeyResponse=()=>{window.fetch=originalFetch;resolve(response);};}))
+        : originalFetch(url,options);
+      document.getElementById('clientKeyName').value='Delayed response owner';
+      document.getElementById('clientKeyForm').requestSubmit();
+    });
+    await until(() => typeof window.releaseClientKeyResponse==='function');
+    await evaluate(() => {document.querySelector('[data-tab="logs"]').click();window.releaseClientKeyResponse();delete window.releaseClientKeyResponse;});
+    await until(() => !document.getElementById('clientKeyIssue').disabled);
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecret').value),'');
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecretPanel').hidden),true);
+    assert.match(await evaluate(() => document.getElementById('clientKeyStatus').textContent),/cleared/);
+    await evaluate(() => {document.querySelector('[data-tab="settings"]').click();document.querySelector('[data-lang="th"]').click();});
+    await until(() => !document.getElementById('clientKeysRefresh').disabled);
+    assert.equal(await evaluate(() => document.getElementById('clientKeysHeading').textContent),'รหัสเชื่อมต่อแยกผู้ใช้');
+    assert.equal(await evaluate(() => document.querySelector('#clientKeysList [data-key-action="rotate"]').textContent),'เปลี่ยนรหัส');
+    assert.equal(await evaluate(() => document.getElementById('tunnel-token').closest('details').open),false);
 
     const unsaved = await evaluate(() => {
       document.querySelector('[data-onboard="settings"]').click();
@@ -174,6 +246,7 @@ if (process.argv.includes('--dashboard-ui-browser')) {
       PRIMARY_DOMAIN:'127.0.0.1',TUNNEL_DOMAIN:'apps.example.test',TUNNEL_TOKEN:'admin-ui-test-key-at-least-32-characters',DASHBOARD_PASSWORD:'dashboard-ui-test-password'});
     const db = require('../server/db');
     const {createDashboard} = require('../server/dashboard');
+    const {createAccessKeyStore} = require('../server/access-keys');
     await db.initDatabase();
     const config = await db.getServerSettings();
     // Populate the retained request counter through the real temporary database.
@@ -186,7 +259,7 @@ if (process.argv.includes('--dashboard-ui-browser')) {
     const tunnel = {tunnelType:'http',label:'team-site',publicHost:'team-site.apps.example.test',localPort:3000,clientIp:'127.0.0.1',
       hostname:'Team computer',os:'Windows',connectedAt:new Date().toISOString(),
       stats:{connections:24,bytesIn:18420,bytesOut:223400},pendingRequests:new Map(),requestLog:[]};
-    const server = createDashboard({getLiveTunnels:()=>[tunnel]},config,{ports:{wsPort:8080,dashboardPort:8081,proxyPort:8082}});
+    const server = createDashboard({getLiveTunnels:()=>[tunnel]},config,{accessKeyStore:createAccessKeyStore({dataDir:testDir}),ports:{wsPort:8080,dashboardPort:8081,proxyPort:8082}});
     await new Promise((resolve)=>server.listen(0,'127.0.0.1',resolve));
     let observedLoginOrigin='';
     server.on('request',(req)=>{if(req.method==='POST'&&req.url.endsWith('/login'))observedLoginOrigin=req.headers.origin;});

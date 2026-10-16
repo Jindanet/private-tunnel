@@ -1,6 +1,7 @@
 const http = require('node:http');
 const { buildNginxConfig } = require('./nginx');
 const { loginStyles, dashboardStyles, gettingStartedMarkup, dashboardBehavior, brandMark } = require('./dashboard-ui');
+const { clientKeysPanel, clientKeysBehavior } = require('./client-keys-ui');
 const { sendControl } = require('../shared/protocol');
 const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
@@ -518,10 +519,10 @@ ${gettingStartedMarkup}
 <div class="panel" id="pLogs"><div class="panel-head"><div><h2 data-i18n="tabLogs">Request Logs</h2><div class="sub" data-i18n="logsNote">Searchable, paginated recent traffic view for high-volume hosts.</div></div><div class="panel-meta" id="logMeta"></div></div><div class="panel-pad"><div class="toolbar"><div class="toolbar-main"><input id="logSearch" class="search" data-i18n-placeholder="searchLogs" placeholder="Search request logs"><select id="logPageSize" class="select"><option>25</option><option>50</option><option>100</option></select></div><div class="toolbar-side"><span class="range-label" id="logRange"></span><div class="pager"><button type="button" id="logPrev" data-i18n="prev">Prev</button><span class="page-label" id="logPage"></span><button type="button" id="logNext" data-i18n="next">Next</button></div></div></div></div><div class="table-wrap"><table><thead><tr><th data-i18n="colTime">Time</th><th data-i18n="colHost">Host</th><th data-i18n="colVisitorIp">Visitor IP</th><th data-i18n="colMethod">Method</th><th data-i18n="colPath">Path</th><th data-i18n="colStatus">Status</th><th data-i18n="colLatency">Latency</th><th data-i18n="colUserAgent">User-Agent</th></tr></thead><tbody id="tLogs"><tr><td colspan="8" class="empty">No requests yet</td></tr></tbody></table></div></div>
 <div class="panel" id="pClients"><div class="panel-head"><div><h2 data-i18n="tabClients">All Clients</h2><div class="sub" data-i18n="clientsNote">Review assigned hosts, publish modes, and client metadata without rendering every row at once.</div></div><div class="panel-meta" id="clientMeta"></div></div><div class="panel-pad"><div class="toolbar"><div class="toolbar-main"><input id="clientSearch" class="search" data-i18n-placeholder="searchClients" placeholder="Search clients"><select id="clientPageSize" class="select"><option>25</option><option>50</option><option>100</option></select></div><div class="toolbar-side"><span class="range-label" id="clientRange"></span><div class="pager"><button type="button" id="clientPrev" data-i18n="prev">Prev</button><span class="page-label" id="clientPage"></span><button type="button" id="clientNext" data-i18n="next">Next</button></div></div></div></div><div class="table-wrap"><table><thead><tr><th data-i18n="colClientId">Client ID</th><th data-i18n="colPublicHost">Public Host</th><th data-i18n="colDomain">Domain</th><th data-i18n="colMode">Mode</th><th data-i18n="colLabel">Label</th><th data-i18n="colIp">IP</th><th data-i18n="colHostname">Hostname</th><th data-i18n="colOs">OS</th><th data-i18n="colLastSeen">Last Seen</th></tr></thead><tbody id="tClients"><tr><td colspan="9" class="empty">No clients</td></tr></tbody></table></div></div>
 <section class="panel" id="pSettings"><div class="panel-head"><div><h2 data-i18n="tabSettings">Settings</h2><p class="sub" data-i18n="settingsNote"></p></div></div>
-<div class="split"><div class="grid"><section class="box"><h2 data-i18n="boxServerSettings">Connection settings</h2><p class="settings-form-note" data-i18n="settingsFormNote"></p>
+<div class="split"><div class="grid">${clientKeysPanel}<section class="box"><h2 data-i18n="boxServerSettings">Connection settings</h2><p class="settings-form-note" data-i18n="settingsFormNote"></p>
 <form id="settingsForm"><div class="form-grid">
 <div class="field"><label for="primary-domain" data-i18n="fieldPrimaryDomain">Server domain</label><input id="primary-domain" data-i18n-placeholder="placeholderPrimaryDomain" placeholder="server.example.com" autocomplete="off" spellcheck="false"></div>
-<div class="field"><label for="tunnel-token" data-i18n="fieldTunnelToken">Access key</label><div class="input-row"><input type="password" autocomplete="off" id="tunnel-token" data-i18n-placeholder="placeholderTunnelToken"><button type="button" class="btn secondary" id="toggleAccessKey" aria-pressed="false" aria-controls="tunnel-token">Show</button></div></div>
+<details class="field"><summary data-i18n="legacySharedAccess">Advanced: shared-key compatibility</summary><label for="tunnel-token" data-i18n="fieldTunnelToken">Legacy shared key</label><div class="input-row"><input type="password" autocomplete="off" id="tunnel-token" data-i18n-placeholder="placeholderTunnelToken"><button type="button" class="btn secondary" id="toggleAccessKey" aria-pressed="false" aria-controls="tunnel-token">Show</button></div><small data-i18n="legacySharedHint">Unused by default. Enable shared-key compatibility on the server only for migration.</small></details>
 <div class="field"><label data-i18n="fieldPublishDomains">Domains for shared apps</label><div id="publishList" class="publish-list"></div><small data-i18n="publishDomainsHelp"></small><div class="actions"><button id="addPublishDomain" class="btn secondary" type="button" data-i18n="addPublishDomain">Add domain</button></div></div>
 <details class="field"><summary data-i18n="advancedRouting">Advanced routing</summary><label for="control-root" data-i18n="fieldControlRoot">Reserved control path</label><input id="control-root" data-i18n-placeholder="placeholderControlRoot" placeholder="/_private-tunnel" spellcheck="false"></details>
 </div><div class="actions"><button class="btn primary" id="saveBtn" type="submit" data-i18n="saveSettings">Save changes</button><span class="status" id="settingsStatus" role="status" aria-live="polite"></span></div></form></section>
@@ -805,6 +806,7 @@ async function initDashboard(){
 }
 
 ${dashboardBehavior}
+${clientKeysBehavior}
 initDashboard();
 </script></body></html>`;
 }
@@ -926,6 +928,43 @@ function createDashboard(tunnelManager, runtimeConfig, options = {}) {
 
     if (pathname === `${routes.adminApiBasePath}/clients` && req.method === 'GET') {
       sendJson(res, 200, { clients: await getAllClients() });
+      return;
+    }
+
+    const clientKeysPath = `${routes.adminApiBasePath}/client-keys`;
+    const clientKeyAction = pathname.startsWith(`${clientKeysPath}/`)
+      ? pathname.slice(clientKeysPath.length + 1).split('/') : [];
+    if ((pathname === clientKeysPath && ['GET', 'POST'].includes(req.method))
+      || (req.method === 'POST' && clientKeyAction.length === 2 && ['revoke', 'rotate'].includes(clientKeyAction[1]))) {
+      const store = options.accessKeyStore;
+      if (!store) {
+        sendJson(res, 503, { error: 'Client key management is unavailable.' }); return;
+      }
+      if (req.method === 'GET') {
+        sendJson(res, 200, { keys: store.list() }); return;
+      }
+      let payload;
+      try { payload = await parseJsonBody(req); }
+      catch (error) { sendJson(res, 400, { error: error.message }); return; }
+      try {
+        await serializeMutation(async () => {
+          if (!isAuthenticated(req) || requestGeneration !== credentialGeneration) {
+            sendJson(res, 401, { error: 'Session expired. Sign in again.' }); return;
+          }
+          if (pathname === clientKeysPath) {
+            sendJson(res, 201, await store.issue(payload.name)); return;
+          }
+          const [id, action] = clientKeyAction;
+          const result = await store[action](id);
+          if (!result) { sendJson(res, 404, { error: 'Client key was not found.' }); return; }
+          if (typeof options.onClientKeyRevoked === 'function') await options.onClientKeyRevoked(id);
+          sendJson(res, 200, action === 'rotate' ? result : { key: result });
+        });
+      } catch (error) {
+        sendJson(res, error.code === 'EACCESSKEYINPUT' ? 400 : 500, {
+          error: error.code === 'EACCESSKEYINPUT' ? error.message : 'Could not update client access keys.',
+        });
+      }
       return;
     }
 

@@ -81,7 +81,7 @@ test('real dashboard enforces admin boundaries and safely renders hostile metada
   sqlite.prepare('UPDATE config SET value=? WHERE key=?').run(require('node:crypto').createHash('sha256').update('legacy-test-password').digest('hex'),'admin_password_hash');
   sqlite.close();
   const [legacyAccepted]=await Promise.all([db.verifyPassword('legacy-test-password'),db.setDashboardPassword('rotated-after-legacy-password')]);
-  assert.equal(legacyAccepted,true);
+  assert.equal(legacyAccepted,Date.now()<require('../server/security').LEGACY_PASSWORD_HASH_CUTOFF);
   assert.equal(await db.verifyPassword('legacy-test-password'),false);
   assert.equal(await db.verifyPassword('rotated-after-legacy-password'),true);
   const rejections=[];

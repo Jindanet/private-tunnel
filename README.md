@@ -2,7 +2,7 @@
 
 แชร์เว็บไซต์หรือบริการจากเครื่องของคุณผ่านเซิร์ฟเวอร์ที่ดูแลเอง รองรับแอปเดสก์ท็อปและคำสั่ง CLI ภาษาไทย/อังกฤษ
 
-Share a local website or TCP service through a server you control. Version **1.1.0** focuses on a clearer first use and safer defaults. Intended for personal use or a small, trusted team. **Public multi-user hosting is not production ready**; see the limitations below.
+Share a local website or TCP service through a server you control. Version **1.2.0** adds client-specific keys, owner-bound host reservations and streaming reliability. **Public multi-user hosting still requires independent review, capacity testing and operational controls**; see the limitations below.
 
 ## เริ่มใช้งานด้วยแอป / Desktop quick start
 
@@ -76,9 +76,9 @@ You need Node.js 22.12+, a server, DNS access, Nginx and TLS certificates. The d
 
 1. Install dependencies with `npm ci`. Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell, `cp .env.example .env` on Linux).
 2. Set `PRIMARY_DOMAIN` to the exact admin hostname and `TUNNEL_DOMAIN` to the public website domain. For example, `admin.example.com` and `apps.example.com`. Keep the internal bind address `127.0.0.1` and `AUTO_FIREWALL=false`.
-3. Start with `npm run server` as a regular service user. On first boot, an empty access key generates a random 32-byte key stored in the database. If supplying your own key, generate a cryptographically random secret that meets the requirements below. An empty admin password generates `<DATA_DIR>/admin-bootstrap.txt`. Protect this file and the data directory.
+3. Start with `npm run server` as a regular service user. An empty admin password generates `<DATA_DIR>/admin-bootstrap.txt`. Protect this file and the data directory. The database's generated legacy shared key is unused by default; create individual keys in Settings instead.
 4. Configure Nginx, DNS and certificates using [the deployment guide](deploy/README.md) and [the Nginx template](deploy/nginx.example.conf). Check with `nginx -t` before reloading.
-5. Open `https://admin.example.com/_private-tunnel/admin`, sign in using the bootstrap password, and change it. Rotation removes the bootstrap file and invalidates current sessions. Copy the server address and access key from Settings to onboard users.
+5. Open `https://admin.example.com/_private-tunnel/admin`, sign in using the bootstrap password, and change it. Rotation removes the bootstrap file and invalidates current sessions. In **Settings → Client access keys**, create a named key per person or device and send its one-time secret with the server address to that owner.
 
 The three internal ports must remain private:
 
@@ -113,17 +113,22 @@ Any supplied access key must contain 32–4096 visible ASCII characters without 
 | `INTERNAL_HOST` | `127.0.0.1` | Internal listener address |
 | `WS_PORT`, `DASHBOARD_PORT`, `PROXY_PORT` | `8080`, `8081`, `8082` | Internal ports |
 | `PRIMARY_DOMAIN`, `TUNNEL_DOMAIN` | empty | First-boot admin and publish domains |
-| `TUNNEL_TOKEN` | generated on first boot | Shared client access key; supplied values must meet the requirements above |
+| `TUNNEL_TOKEN` | generated on first boot | Legacy shared access key, unused unless shared-key compatibility is enabled |
 | `DASHBOARD_PASSWORD` | generated on first boot | Admin bootstrap password |
 | `DATA_DIR` | `./data` | Private runtime files |
 | `AUTO_FIREWALL` | `false` | Optional legacy privileged firewall automation |
+| `TCP_BIND_HOST` | OS interfaces | Optional local interface IP for public TCP listeners |
+| `TCP_VISITOR_ALLOWLIST` | empty (public) | Optional comma-separated visitor IP addresses/CIDRs |
+| `ALLOW_SHARED_TUNNEL_TOKEN` | `false` | Restore legacy shared-key authentication for trusted migration only |
+| `REQUIRE_DATA_TRANSPORT_V4` | `true` | Reject old data-plane clients without receive-credit support |
+| `HTTP_IDLE_TIMEOUT_MS` | `30000` | Per-request inactivity, 50–3600000 ms; active streams may run longer |
 | `ALLOW_LEGACY_QUERY_TOKEN` | `false` | Temporary compatibility for old query-token clients |
 | `ALLOW_UNAUTHENTICATED_TUNNELS` | `false` | Explicit opt-in to unauthenticated test tunnels |
 | `REQUEST_LOGGING` | `true` | Record new request metadata; set `false` to disable |
 | `DB_PROVIDER` | `sqlite` | Primary backend: `sqlite` or `mysql` |
 | `SQLITE_PATH` | `<DATA_DIR>/tunnel.db` | SQLite database; explicit path takes precedence over `DATA_DIR`; legacy alias `DB_PATH` |
 | `DB_SYNC_TARGETS` | empty | Optional comma-separated mirror backends |
-| `DB_SYNC_STRICT` | `false` | Make mirror write errors fail the operation |
+| `DB_SYNC_STRICT` | `true` | Fail on mirror errors in non-production migration mode |
 | `DB_BOOTSTRAP_SYNC` | `false` | Optional automatic seed into an empty backend |
 
 For MySQL, set `MYSQL_HOST`, `MYSQL_PORT` (3306), `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE`. Use a dedicated database user. Schema setup may create the database if the account permits it; pre-create the database if you do not grant that permission.
@@ -132,7 +137,7 @@ Changing `DATA_DIR` does not relocate an explicitly configured `SQLITE_PATH` (or
 
 ### Storage, backup and migration
 
-Prefer one backend with scheduled, tested backups. The optional MySQL/SQLite mirror feature remains available for existing deployments. It is **not** an automatic failover system or a backup. With `DB_SYNC_STRICT=false`, mirror errors are logged but writes may diverge. Strict mode cannot make a cross-database write atomic. Bootstrap copying is disabled unless explicitly enabled.
+Use one backend with scheduled, tested backups. `NODE_ENV=production` rejects mirror targets other than the primary backend. Non-production migration compatibility remains available; strict mirror errors are enabled by default. With an explicit `DB_SYNC_STRICT=false`, mirror errors are logged but writes may diverge. Strict mode cannot make a cross-database write atomic. Bootstrap copying is disabled unless explicitly enabled. A mirror is neither automatic failover nor a backup.
 
 For a planned migration, stop the service, back up every source and destination, configure the intended backend and empty target, then enable bootstrap sync only for the migration. Verify the resulting settings, clients and logs before disabling sync and resuming use. Never point it at an unrelated database. Schema changes run automatically at startup; versioned migration rollback is not implemented. Restore a matching pre-upgrade database and application version to roll back.
 
@@ -150,15 +155,26 @@ Back up `.env`, the database(s), data directory and client profiles before upgra
 - Re-generate Nginx snippets and review every publish host. The exact admin host and wildcard publish hosts must use separate TLS blocks.
 - Legacy password hashes migrate to salted scrypt after a successful login. Change the admin password afterward and protect database backups.
 
-The application control protocol remains version 1 in `shared/protocol.js`. Explicitly incompatible control versions are rejected; legacy clients without a version remain accepted for migration.
+The application control protocol remains version 1 in `shared/protocol.js`. Explicitly incompatible control versions are rejected. Modern servers require data transport v4 by default; legacy data transport requires explicit migration opt-in.
+
+### Upgrade to 1.2: client keys and profiles
+
+1. Back up the database, `.env`, data directory (including `client-keys.json`) and client profiles. Update server and clients together.
+2. Sign in to administrator **Settings → Client access keys**. Issue a named key for each person or device. Copy its secret when created; it cannot be recovered from the server. Rotation keeps the same owner and host reservations, disconnecting only that key's existing connections. Revocation disables the key and its sessions. Each key can open at most 16 simultaneous control connections; streams retain their existing bounds.
+3. Replace the client's old shared key with its individual key. `ALLOW_SHARED_TUNNEL_TOKEN=false` is the default, so the old shared secret no longer authenticates. Temporary `true` restores the old trusted-team mode; it does not turn shared users into isolated identities. Legacy callers cannot assert an individual key's reserved identity namespace.
+4. Existing shared-key host reservations are not silently transferred to the first new key that asserts an old profile ID. Use a different hostname, or have the administrator release the old reservation in a controlled maintenance process. Reissue/rotation preserves new reservations; keep `client-keys.json` with the database when restoring. The registry is single-process state, not an HA key service; do not edit it while the service is running.
+5. Desktop profiles now use `~/.ptunnel-desktop.json`, with tokens encrypted using Electron `safeStorage` after OS credential storage is ready. The old `~/.ptunnel` CLI profile is imported read-only on first desktop startup and is never overwritten. An unavailable/locked keyring prevents persistent credentials and shows a setup error. Linux requires Secret Service or KWallet; plaintext `basic_text` storage is rejected. The CLI still uses its separate plaintext `0600` profile: remove/rotate any unused legacy key there and protect the account and backups.
+6. Remote client connections require `wss://`. Unencrypted `ws://` is allowed only for exact localhost/loopback development addresses. Public TCP remains a raw service; configure service TLS/authentication as required. `TCP_BIND_HOST` selects a local interface IP and `TCP_VISITOR_ALLOWLIST` accepts comma-separated visitor IPs/CIDRs. No fixed TCP allocation range is restored.
+7. HTTP timeout is now **inactivity**, configured by `HTTP_IDLE_TIMEOUT_MS` (default 30000). Upload bytes, response headers and response data refresh only that request's timer. Active large transfers/SSE may exceed 30 seconds. If an idle/error/disconnect occurs after headers, the response is destroyed so the caller detects an incomplete transfer; gateway error text is never appended to the body. The public proxy has no separate total upload receipt deadline; header parsing remains bounded. Review reverse-proxy/application timeouts separately.
+8. Sign in and change any legacy SHA-256 administrator password before **2027-01-01 UTC**. Successful legacy sign-in upgrades to scrypt until that cutoff; legacy hashes are rejected from that date. Preserve a reviewed offline recovery/backup procedure for installations that miss this migration.
 
 ### HTTP/TCP data transport v4
 
-Current desktop and CLI clients use `shared/tunnel-v4.js`. During tunnel setup they advertise `dataTransportVersions: [4, 1]`; an updated server selects `dataTransportVersion: 4` in its assignment. An older server that omits the selection uses the original v1 transport, and older clients continue to work with an updated server. The base `shared/protocol.js` is preserved unchanged. The supplied v2/v3/game-pipe prototypes informed the design; the running application imports the new v4 implementation.
+Current desktop and CLI clients use `shared/tunnel-v4.js`. During tunnel setup they advertise `dataTransportVersions: [4, 1]`; an updated server selects `dataTransportVersion: 4` in its assignment. Servers default to `REQUIRE_DATA_TRANSPORT_V4=true` and reject clients without v4 before allocating a tunnel. `false` explicitly restores older-client compatibility for migration, including v1 buffering limitations. A client connecting to an older server that omits selection still falls back to v1. The base `shared/protocol.js` is preserved unchanged. The supplied v2/v3/game-pipe prototypes informed the design; the running application imports the new v4 implementation.
 
 V4 retains the existing JSON controls and UUID stream identities. Data is split into frames of at most 32 KiB, scheduled fairly across streams, and sent under both a 128 KiB per-stream credit window and a 1 MiB connection window. Credit accounts for payload plus a fixed 256-unit charge per frame to bound tiny-frame metadata too. Receivers return credit after the destination's write callback completes. A slow local service pauses the corresponding producer; send queues also have 512 KiB / 1,024 chunks per stream and 4 MiB / 8,192 chunks per connection hard limits. These bounds reduce application buffering; they are not a process-wide memory budget or a throughput guarantee.
 
-End-of-stream controls wait behind queued data. Modern TCP connections preserve independent EOF directions, allowing a service to reply after the visitor has finished sending. Aborts discard queued bytes and release resources. TCP sockets enable no-delay and keepalive. V4 does not add UDP, compression, new authentication, application WebSocket passthrough or horizontal scaling; authentication remains at the existing WebSocket upgrade boundary. HTTP requests retain the 30-second timeout.
+End-of-stream controls wait behind queued data. Modern TCP connections preserve independent EOF directions, allowing a service to reply after the visitor has finished sending. Aborts discard queued bytes and release resources. TCP sockets enable no-delay and keepalive. V4 does not add UDP, compression, application WebSocket passthrough or horizontal scaling. Authentication is checked at the WebSocket upgrade boundary, with individual key ownership applied to route checks and tunnel creation. Server heartbeats terminate a peer after two missed reply rounds; the client also terminates locally after 90 seconds without server messages, allowing recovery when the connection is blackholed. Reconnects use bounded exponential jitter and stop after authentication rejection.
 
 The internal `TunnelClient` option `dataTransportVersions: [1]` forces legacy transport for compatibility testing. Desktop users do not need to choose a protocol. Rebuild both server/client code and the desktop package to use the new implementation; already-built binaries do not change when source files are edited.
 
@@ -166,11 +182,11 @@ The internal `TunnelClient` option `dataTransportVersions: [1]` forces legacy tr
 
 This release improves several boundaries; it does not make an untrusted public hosting service safe. Before broader use, the project still needs independent review, load testing and operational design.
 
-- **Shared key and client identities:** all clients use one key. There is no per-client key, expiration, scope or revoke. A client-supplied ID and remembered hostname are not an authenticated tenant identity. Do not mix mutually untrusted users.
-- **Public services:** anyone who can reach a published HTTP/TCP endpoint can access it unless the local application implements authentication. Public TCP has no built-in TLS or visitor access control. TLS on the control connection does not encrypt the visitor-to-public-TCP leg.
-- **Transport and privacy:** Nginx terminates HTTPS and the server can read traffic. There is no end-to-end encryption through the server. CLI profiles and server database settings contain plaintext access keys; protect files and backups.
+- **Keys and ownership:** individual keys authenticate separate owners, with rotation/revocation and owner-bound saved hostname profiles. Keys currently grant publishing on the server's configured domains; per-domain policies, key expiration and billing quotas are not implemented. The optional shared-key compatibility mode is intended only for trusted users.
+- **Public services:** anyone who can reach a published HTTP/TCP endpoint can access it unless the local application implements authentication or a TCP visitor allowlist restricts it. TCP allowlists use the actual socket peer, not forwarded headers; a proxy/NAT may therefore be the visible peer. Public TCP has no built-in TLS or visitor login. TLS on the control connection does not encrypt the visitor-to-public-TCP leg.
+- **Transport and privacy:** Nginx terminates HTTPS and the server can read traffic. There is no end-to-end encryption through the server. Individual server keys are stored as SHA-256 digests of randomly generated high-entropy tokens; desktop keys use OS-backed storage. CLI profiles and legacy shared-key database settings still contain plaintext credentials; protect those files and backups. OS-backed storage does not protect against malware already acting as the signed-in user.
 - **Request metadata:** stored paths/referrers omit URL queries/fragments and HTTP URL credentials. Full request headers and bodies are not persisted by this logger. Metadata can still contain private path segments, visitor IPs and user agents. Retention is seven days with periodic cleanup; `REQUEST_LOGGING=false` disables new metadata logs. Older rows and backups are not retroactively redacted, and your Nginx/application logs have separate privacy settings.
-- **Compatibility:** UDP and application WebSocket upgrade passthrough are not implemented. HTTP requests time out after about 30 seconds. A long-running upload or streaming response can be interrupted.
+- **Compatibility:** UDP and application WebSocket upgrade passthrough are not implemented. HTTP streams expire on inactivity, not elapsed duration. Explicit v1 compatibility lacks receive-credit flow control and retains its original buffer/overflow behavior; keep v4 required on exposed servers.
 - **Capacity and availability:** bounded buffers, connection limits and timeouts reduce obvious resource abuse. Per-user bandwidth quotas, public abuse handling, HA, horizontal scaling and Prometheus metrics are not implemented. Tunnel/session state is local to one process. Reconnect cannot resume an interrupted TCP stream.
 - **Administration:** one administrator password, no accounts/RBAC, MFA or durable security audit trail. Liveness is not an end-to-end availability guarantee.
 - **Authentication limits:** a pre-authentication per-IP limit of 60 WebSocket upgrade attempts per minute covers both tunnel routes and administrator live updates, independently of HTTP administrator-login throttling. Shared proxy addresses can therefore share an allowance.
@@ -203,4 +219,4 @@ Build on the corresponding operating system. Windows output is `dist-app/win-unp
 
 CLI build commands are `npm run build:win`, `npm run build:linux` and `npm run build:macos`. Desktop native module packaging and signing need validation on each target platform before a public release.
 
-See [release notes and preparation](deploy/RELEASE-1.1.0.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), and [MIT license](LICENSE). The version and workflows in this checkout do not imply that a remote tag or release has been published.
+See [release notes and preparation](deploy/RELEASE-1.2.0.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). The version and workflows in this checkout do not imply that a remote tag or release has been published.

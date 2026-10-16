@@ -21,7 +21,7 @@ test('actual gateway/client forward HTTP and OS-assigned TCP, reject unauthorize
     env:{...process.env,DB_PROVIDER:'sqlite',DB_SYNC_TARGETS:'',DB_BOOTSTRAP_SYNC:'false',DATA_DIR:directory,SQLITE_PATH:path.join(directory,'test.db'),
       WS_PORT:String(wsPort),DASHBOARD_PORT:String(dashboardPort),PROXY_PORT:String(proxyPort),INTERNAL_HOST:'127.0.0.1',PRIMARY_DOMAIN:'127.0.0.1',
       TUNNEL_DOMAIN:'apps.example.net',TUNNEL_TOKEN:'integration-only-secret-at-least-32-characters',DASHBOARD_PASSWORD:'integration-only-password',AUTO_FIREWALL:'false',
-      ALLOW_LEGACY_QUERY_TOKEN:'false',ALLOW_UNAUTHENTICATED_TUNNELS:'false'}});
+      ALLOW_SHARED_TUNNEL_TOKEN:'true',ALLOW_LEGACY_QUERY_TOKEN:'false',ALLOW_UNAUTHENTICATED_TUNNELS:'false'}});
   let output='';child.stdout.on('data',(data)=>output+=data);child.stderr.on('data',(data)=>output+=data);
   let client;
   const tcpClients=[];

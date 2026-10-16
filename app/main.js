@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage, nativeTheme, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -6,26 +6,30 @@ const net = require('node:net');
 const { pathToFileURL } = require('node:url');
 const { getExternalWebUrl, validateTunnelInput } = require('./security');
 const WebSocket = require('ws');
-const { normalizeServerWebSocketUrl } = require('../client/server-url');
+const { normalizeServerWebSocketUrl, requireSecureServerWebSocketUrl } = require('../client/server-url');
+const { createCredentialStore } = require('./credential-store');
 const { MSG, sendControl } = require('../shared/protocol');
 
 const CONFIG_PATH = path.resolve(
   process.env.PTUNNEL_CONFIG_PATH
-  || path.join(process.env.USERPROFILE || process.env.HOME || '.', '.ptunnel')
+  || path.join(process.env.USERPROFILE || process.env.HOME || '.', '.ptunnel-desktop.json')
 );
-
-function loadConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
+const credentialStore = createCredentialStore({
+  configPath: CONFIG_PATH,
+  legacyPath: path.join(process.env.USERPROFILE || process.env.HOME || '.', '.ptunnel'),
+  importLegacy: !process.env.PTUNNEL_CONFIG_PATH,
+  safeStorage,
+  isReady: () => app.isReady(),
+  fs,
+});
+let config = { token: null, tunnels: [] };
+let credentialStorageError = null;
 
 function saveConfig(nextConfig) {
-  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextConfig, null, 2), { encoding: 'utf-8', mode: 0o600 });
-  if (process.platform !== 'win32') fs.chmodSync(CONFIG_PATH, 0o600);
+  const result = credentialStore.save(nextConfig);
+  config = result.config;
+  credentialStorageError = result.credentialStorageError || (config.token ? null : credentialStorageError);
+  return result;
 }
 
 function normalizeDesiredSubdomain(value) {
@@ -51,12 +55,9 @@ function validateServerProfileInput(url, token) {
     errors.serverUrl = 'Server WebSocket URL is required.';
   } else {
     try {
-      const parsed = new URL(normalizedUrl);
-      if (!/^wss?:$/i.test(parsed.protocol) || parsed.username || parsed.password || parsed.hash) {
-        errors.serverUrl = 'Server URL must start with ws:// or wss://.';
-      }
-    } catch {
-      errors.serverUrl = 'Enter a valid server hostname or WebSocket URL.';
+      requireSecureServerWebSocketUrl(normalizedUrl);
+    } catch (error) {
+      errors.serverUrl = error.code === 'EINSECURETRANSPORT' ? error.message : 'Enter a valid secure WebSocket server URL without embedded credentials or fragments.';
     }
   }
 
@@ -77,7 +78,7 @@ function validateServerProfileInput(url, token) {
 }
 
 function buildAuthenticatedWebSocketUrl(serverUrl) {
-  const url = new URL(normalizeServerWebSocketUrl(serverUrl));
+  const url = new URL(requireSecureServerWebSocketUrl(serverUrl));
   url.searchParams.delete('token');
   return url.toString();
 }
@@ -178,14 +179,6 @@ async function checkTunnelConfigWithServer({
   });
 }
 
-let config = loadConfig();
-if (!config.clientId) config.clientId = crypto.randomUUID();
-if (!Array.isArray(config.tunnels)) config.tunnels = [];
-if (config.serverUrl) config.serverUrl = normalizeServerWebSocketUrl(config.serverUrl);
-config.token = String(config.token || '').trim() || null;
-config.tunnels = config.tunnels.map(normalizeTunnelConfig);
-saveConfig(config);
-
 const tunnelInstances = new Map();
 const pendingStarts = new Map();
 
@@ -275,6 +268,19 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
+  try {
+    const loaded = credentialStore.load();
+    config = loaded.config;
+    if (!config.clientId) config.clientId = crypto.randomUUID();
+    if (!Array.isArray(config.tunnels)) config.tunnels = [];
+    if (config.serverUrl) config.serverUrl = normalizeServerWebSocketUrl(config.serverUrl);
+    config.tunnels = config.tunnels.map(normalizeTunnelConfig);
+    saveConfig(config);
+    credentialStorageError = credentialStorageError || loaded.credentialStorageError;
+  } catch {
+    config = { token: null, tunnels: [] };
+    credentialStorageError = 'The desktop profile could not be loaded or protected. Check its file permissions, then re-enter the access key. No access key was saved.';
+  }
   createWindow();
   createTray();
 });
@@ -291,10 +297,13 @@ app.on('before-quit', () => {
 handleTrusted('get-config', () => ({
   ...config,
   configPath: CONFIG_PATH,
+  credentialStorageError,
 }));
 
 handleTrusted('validate-server-profile', (_, payload) => {
   const result = validateServerProfileInput(payload && payload.serverUrl, payload && payload.token);
+  const storageError = credentialStore.getAvailabilityError();
+  if (storageError) { result.ok = false; result.errors.token = storageError; }
   return {
     ok: result.ok,
     errors: result.errors,
@@ -305,6 +314,8 @@ handleTrusted('validate-server-profile', (_, payload) => {
 handleTrusted('test-server-profile', async (_, payload) => {
   const result = validateServerProfileInput(payload && payload.serverUrl, payload && payload.token);
   if (!result.ok) return { ok: false, errors: result.errors };
+  const storageError = credentialStore.getAvailabilityError();
+  if (storageError) return { ok: false, errors: { token: storageError }, message: storageError };
   const check = await checkTunnelConfigWithServer({ serverUrl: result.normalizedUrl, token: result.token, type: 'http' });
   return { ok: check.reachable === true, message: check.reachable ? 'Server connection verified.' : check.message };
 });
@@ -319,9 +330,11 @@ handleTrusted('save-server-profile', (_, payload) => {
     };
   }
 
-  config.serverUrl = result.normalizedUrl;
-  config.token = result.token;
-  saveConfig(config);
+  const saved = saveConfig({ ...config, serverUrl: result.normalizedUrl, token: result.token });
+  if (saved.credentialStorageError) return {
+    ok: false, errors: { token: saved.credentialStorageError }, message: saved.credentialStorageError,
+    normalizedUrl: result.normalizedUrl,
+  };
   return {
     ok: true,
     serverUrl: config.serverUrl,

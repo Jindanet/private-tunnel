@@ -5,7 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const TunnelClient = require('../tunnel-client');
 const TunnelUI = require('../ui');
-const { DEFAULT_TUNNEL_WS_PATH, normalizeServerWebSocketUrl } = require('../server-url');
+const { DEFAULT_TUNNEL_WS_PATH, normalizeServerWebSocketUrl, requireSecureServerWebSocketUrl } = require('../server-url');
 
 const HOME_DIR = process.env.USERPROFILE || process.env.HOME || '.';
 const CONFIG_PATH = path.resolve(process.env.PTUNNEL_CONFIG_PATH || path.join(HOME_DIR, '.ptunnel'));
@@ -166,7 +166,9 @@ function hasSavedConnection() {
 }
 
 function saveConnectionProfile({ server, token }) {
-  const nextServer = server ? normalizeServerWebSocketUrl(server) : normalizeServerWebSocketUrl(config.serverUrl || '');
+  let nextServer;
+  try { nextServer = requireSecureServerWebSocketUrl(server || config.serverUrl || ''); }
+  catch (error) { printSetupGuide(error.message); process.exit(1); }
   const nextToken = token ? String(token).trim() : String(config.token || '').trim();
 
   if (!nextServer || !nextToken) {

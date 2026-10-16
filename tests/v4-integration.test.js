@@ -118,6 +118,7 @@ async function gateway(t) {
     INTERNAL_HOST: LOOPBACK, PRIMARY_DOMAIN: LOOPBACK, TUNNEL_DOMAIN: 'apps.example.test',
     TUNNEL_TOKEN: TOKEN, DASHBOARD_PASSWORD: 'v4-integration-only-password',
     AUTO_FIREWALL: 'false', REQUEST_LOGGING: 'false',
+    ALLOW_SHARED_TUNNEL_TOKEN: 'true', REQUIRE_DATA_TRANSPORT_V4: 'false',
     ALLOW_LEGACY_QUERY_TOKEN: 'false', ALLOW_UNAUTHENTICATED_TUNNELS: 'false',
   };
   child = spawn(process.execPath, [path.resolve(__dirname, '../server/index.js')], {
@@ -238,7 +239,7 @@ test('a v4 upload blocked by its local consumer does not block another HTTP stre
   const tunnel = await connectTunnel(t, port, remote.wsPort);
   assertSelected(tunnel, 4);
 
-  const payload = bytes(12 * 1024 * 1024 + 317, 97);
+  const payload = bytes(20 * 1024 * 1024 + 317, 97);
   const upload = publicRequest(t, remote, tunnel.assignment, '/blocked', payload);
   await deadline(blocked.promise, 'The blocked local upload was never opened');
   await waitFor(() => [...tunnel.client.requestStreams.values()].some((stream) =>

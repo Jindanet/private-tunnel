@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { once } = require('node:events');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, safeStorage } = require('electron');
 
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ptunnel-real-main-'));
 process.env.PTUNNEL_CONFIG_PATH=path.join(directory,'profile.json');
@@ -32,9 +32,19 @@ require('../../app/main');
     return {configPath:config.configPath,blocked,profile,started,title:document.title};
   })()`);
   assert.equal(result.configPath,process.env.PTUNNEL_CONFIG_PATH);
-  assert.equal(result.blocked,false);assert.equal(result.profile.ok,true);
-  assert.match(result.started.error,/Your local app is not running/);
+  assert.equal(result.blocked,false);
+  const secureStorage = safeStorage.isEncryptionAvailable()
+    && (process.platform !== 'linux' || ['gnome_libsecret','kwallet','kwallet5','kwallet6'].includes(safeStorage.getSelectedStorageBackend()));
+  assert.equal(result.profile.ok,secureStorage);
+  if (secureStorage) assert.match(result.started.error,/Your local app is not running/);
+  else {
+    assert.match(result.profile.errors.token,/credential storage|keyring/i);
+    assert.match(result.started.error,/server profile first/i);
+  }
+  const saved=JSON.parse(fs.readFileSync(process.env.PTUNNEL_CONFIG_PATH,'utf8'));
+  assert.equal(Object.hasOwn(saved,'token'),false);
+  assert.equal(Boolean(saved.credential),secureStorage);
   assert.match(result.title,/PrivateTunnel/);
-  console.log('Production Electron entry/preload/IPC/local-port checks passed.');
+  console.log('Production Electron entry/preload/IPC/credential-storage checks passed.');
   app.quit();
 })().catch((error)=>{console.error(error);app.exit(1);});

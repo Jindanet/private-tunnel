@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const derive = promisify(crypto.scrypt);
+const LEGACY_PASSWORD_HASH_CUTOFF = Date.parse('2027-01-01T00:00:00.000Z');
 
 function constantTimeEquals(left, right) {
   const a = Buffer.from(String(left || ''));
@@ -20,9 +21,10 @@ function validateNewPassword(password) {
   return password;
 }
 
-async function verifyPasswordHash(password, stored) {
+async function verifyPasswordHash(password, stored, { now = Date.now() } = {}) {
   if (typeof password !== 'string' || !password || password.length > 1024) return false;
   if (/^[a-f0-9]{64}$/i.test(stored || '')) {
+    if (now >= LEGACY_PASSWORD_HASH_CUTOFF) return false;
     return constantTimeEquals(stored, crypto.createHash('sha256').update(password).digest('hex'));
   }
   const parts = String(stored || '').split('$');
@@ -119,4 +121,4 @@ function redactLogUrl(value) {
 
 module.exports = { constantTimeEquals, hashPassword, verifyPasswordHash, validateNewPassword, serializeInlineJson,
   isLoopback, clientIp, isAdminHost, isSameOriginMutation, createAttemptLimiter, authenticateTunnel,
-  isValidTunnelToken, validateTunnelToken, redactLogUrl };
+  isValidTunnelToken, validateTunnelToken, redactLogUrl, LEGACY_PASSWORD_HASH_CUTOFF };

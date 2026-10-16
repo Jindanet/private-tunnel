@@ -11,7 +11,10 @@ test('passwords use independent salts and legacy hashes remain verifiable', asyn
   assert.notEqual(first, await hashPassword(password));
   assert.equal(await verifyPasswordHash(password, first), true);
   assert.equal(await verifyPasswordHash('wrong', first), false);
-  assert.equal(await verifyPasswordHash(password, crypto.createHash('sha256').update(password).digest('hex')), true);
+  const legacyHash = crypto.createHash('sha256').update(password).digest('hex');
+  assert.equal(await verifyPasswordHash(password, legacyHash, { now: Date.parse('2026-10-16T00:00:00Z') }), true);
+  assert.equal(await verifyPasswordHash(password, legacyHash, { now: Date.parse('2027-01-01T00:00:00Z') }), false);
+  assert.equal(await verifyPasswordHash(password, first, { now: Date.parse('2027-01-01T00:00:00Z') }), true);
   assert.equal(await verifyPasswordHash(password, 'scrypt$invalid$invalid'), false);
   assert.equal(await verifyPasswordHash('x'.repeat(1025), first), false);
 });

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 — 2026-10-16
+
+- Issue, rotate and revoke client-specific keys from the Thai/English administrator UI. Store only key digests, bind saved host ownership to the authenticated key owner, and disable shared-key authentication by default.
+- Use per-request HTTP inactivity instead of a total 30-second lifetime; abort incomplete responses after headers without appending error text. Require v4 receive-credit transport by default, retaining explicit legacy migration opt-in.
+- Enforce heartbeat replies, add cancelable reconnect jitter, require TLS for remote client connections, and add TCP interface/visitor IP-CIDR controls while keeping OS-selected ports.
+- Encrypt desktop credentials with OS-backed safeStorage in a separate profile; preserve the CLI profile during migration and fail closed on unavailable/insecure storage.
+- Require one database backend in production, default migration mirrors to strict errors, and expire legacy SHA-256 administrator sign-in on 2027-01-01 UTC.
+- Add ownership, streaming, slow-consumer, timeout, credential-store, heartbeat and administrator UI regressions. Update migration, backup and security reporting guidance.
+
 ## 1.1.0 — 2026-10-15 (release preparation)
 
 This version is prepared in source. A remote tag, public release and signed binaries have not been published by this change.

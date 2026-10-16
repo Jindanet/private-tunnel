@@ -121,9 +121,11 @@ test('real MySQL preserves mapping ownership and password rotation', {
     const legacyHash = crypto.createHash('sha256').update(legacyPassword).digest('hex');
     await inspector.execute(`UPDATE \`${schema}\`.config SET value=? WHERE \`key\`=?`, [legacyHash, 'admin_password_hash']);
     assert.equal(await db.verifyPassword('incorrect'), false);
-    assert.equal(await db.verifyPassword(legacyPassword), true);
+    const legacyAllowed = Date.now() < require('../server/security').LEGACY_PASSWORD_HASH_CUTOFF;
+    assert.equal(await db.verifyPassword(legacyPassword), legacyAllowed);
     const [[upgraded]] = await inspector.execute(`SELECT value FROM \`${schema}\`.config WHERE \`key\`=?`, ['admin_password_hash']);
-    assert.match(upgraded.value, /^scrypt\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
+    if (legacyAllowed) assert.match(upgraded.value, /^scrypt\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
+    else assert.equal(upgraded.value, legacyHash);
     await assert.rejects(db.setDashboardPassword('short'), /at least 10/);
     await db.setDashboardPassword('mysql-test-rotated-password');
     assert.equal(await db.verifyPassword(legacyPassword), false);

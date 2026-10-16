@@ -22,7 +22,7 @@ const MYSQL_PASSWORD = String(process.env.MYSQL_PASSWORD || '').trim();
 const MYSQL_DATABASE = String(process.env.MYSQL_DATABASE || 'privatetunnel').trim();
 const DB_PROVIDER = normalizeBackend(process.env.DB_PROVIDER || 'sqlite');
 const DB_SYNC_TARGETS = parseBackendList(process.env.DB_SYNC_TARGETS || '');
-const DB_SYNC_STRICT = parseBooleanEnv(process.env.DB_SYNC_STRICT, false);
+const DB_SYNC_STRICT = parseBooleanEnv(process.env.DB_SYNC_STRICT, true);
 const DB_BOOTSTRAP_SYNC = parseBooleanEnv(process.env.DB_BOOTSTRAP_SYNC, false);
 const ENV_PRIMARY_DOMAIN = normalizeDomain(process.env.PRIMARY_DOMAIN || process.env.DOMAIN || '');
 const ENV_TUNNEL_DOMAIN = normalizeDomain(process.env.TUNNEL_DOMAIN || process.env.DOMAIN || '');
@@ -1160,6 +1160,9 @@ async function ensureAdminPassword() {
 }
 
 async function initDatabase() {
+  if (process.env.NODE_ENV === 'production' && DB_SYNC_TARGETS.some((backend) => backend !== DB_PROVIDER)) {
+    throw new Error('Production requires one database backend. Clear DB_SYNC_TARGETS and use a separate backed-up migration process.');
+  }
   if (['your-password-here', 'change-me', 'admin', 'password'].includes(ENV_DASHBOARD_PASSWORD.toLowerCase())) {
     throw new Error('Replace the example DASHBOARD_PASSWORD, or leave it empty to generate a private bootstrap password.');
   }

@@ -4,11 +4,11 @@ const os = require('node:os');
 const { MSG, PROTOCOL_VERSION, DATA_TRANSPORT_VERSION, TCP_END, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA,
   selectTransport, getTransportVersion, receiveControl, decodeDataFrame, sendControl, sendData, writeFrame, discardFrame, cancelStream } = require('../shared/tunnel-v4');
 const { createForwardRequest } = require('./local-forwarder');
-const { normalizeServerWebSocketUrl } = require('./server-url');
+const { requireSecureServerWebSocketUrl } = require('./server-url');
 
 class TunnelClient {
   constructor(options) {
-    this.serverUrl = normalizeServerWebSocketUrl(options.serverUrl);
+    this.serverUrl = requireSecureServerWebSocketUrl(options.serverUrl);
     this.token = options.token || null;
     this.localHost = options.localHost || 'localhost';
     this.localPort = options.localPort;
@@ -29,6 +29,8 @@ class TunnelClient {
     this.reconnectAttempts = 0;
     this.maxReconnectDelay = 30000;
     this.shouldReconnect = true;
+    this.reconnectTimer = null;
+    this.serverSilenceTimer = null;
 
     // Callbacks
     this.onConnected = options.onConnected || (() => {});
@@ -45,6 +47,10 @@ class TunnelClient {
 
   connect() {
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    clearTimeout(this.serverSilenceTimer);
+    this.serverSilenceTimer = null;
     const url = new URL(this.serverUrl);
     url.searchParams.delete('token');
     this.dataTransportVersion = 1;
@@ -59,7 +65,7 @@ class TunnelClient {
     this.ws.on('open', () => {
       if (this.ws !== ws) return;
       this.connected = true;
-      this.reconnectAttempts = 0;
+      this._watchServer(ws);
 
       // Request a tunnel
       sendControl(this.ws, {
@@ -79,6 +85,7 @@ class TunnelClient {
 
     this.ws.on('message', (data, isBinary) => {
       if (this.ws !== ws || ws.readyState !== ws.OPEN) return;
+      this._watchServer(ws);
       if (isBinary) {
         this._handleBinaryFrame(data);
       } else {
@@ -93,6 +100,8 @@ class TunnelClient {
 
     this.ws.on('close', (code) => {
       if (this.ws !== ws) return;
+      clearTimeout(this.serverSilenceTimer);
+      this.serverSilenceTimer = null;
       this.connected = false;
       this._clearRequestStreams(new Error('Tunnel WebSocket closed'));
       this._clearTcpSockets();
@@ -136,6 +145,7 @@ class TunnelClient {
     if (!receiveControl(this.ws, msg)) return;
     switch (msg.type) {
       case MSG.TUNNEL_ASSIGNED:
+        this.reconnectAttempts = 0;
         this.subdomain = msg.subdomain;
         this.url = msg.url;
         this.onConnected({
@@ -408,14 +418,30 @@ class TunnelClient {
     this.tcpSockets.clear();
   }
 
+  _watchServer(ws) {
+    if (this.serverSilenceTimer?.refresh) {
+      this.serverSilenceTimer.refresh();
+      return;
+    }
+    clearTimeout(this.serverSilenceTimer);
+    this.serverSilenceTimer = setTimeout(() => {
+      this.serverSilenceTimer = null;
+      if (this.ws === ws && ws.readyState === ws.OPEN && this.shouldReconnect) ws.terminate();
+    }, 90000);
+    this.serverSilenceTimer.unref?.();
+  }
+
   _reconnect() {
-    const delay = Math.min(
-      1000 * Math.pow(2, this.reconnectAttempts),
+    if (!this.shouldReconnect || this.reconnectTimer) return;
+    const cap = Math.min(
+      1000 * Math.pow(2, Math.min(this.reconnectAttempts, 30)),
       this.maxReconnectDelay
     );
+    const delay = Math.floor(cap * (0.5 + Math.random() * 0.5));
     this.reconnectAttempts++;
 
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       if (this.shouldReconnect) {
         this.connect();
       }
@@ -424,6 +450,10 @@ class TunnelClient {
 
   disconnect() {
     this.shouldReconnect = false;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    clearTimeout(this.serverSilenceTimer);
+    this.serverSilenceTimer = null;
     this._clearRequestStreams(new Error('Tunnel disconnected by client'));
     this._clearTcpSockets();
     if (this.ws) {

@@ -1000,6 +1000,9 @@ async function init() {
     showView(hasProfile ? 'main' : 'setup');
     if (!hasProfile) {
       $('setup-url').value = config.serverUrl || '';
+      if (saved.credentialStorageError) {
+        setRememberedStatus('setup', { kind: 'error', message: saved.credentialStorageError });
+      }
       $('setup-url').focus();
     }
   } catch {

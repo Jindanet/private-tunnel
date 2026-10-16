@@ -8,12 +8,23 @@ const { generate, RESERVED } = require('./subdomain');
 const { getClientMapping, getClientMappingByAssignedHost, isSubdomainTaken, saveMapping, touchClient, logRequest } = require('./db');
 const { openPort, closePort } = require('./firewall');
 const { normalizeDomain, buildHttpHost, getTcpAddress, getTunnelHttpOrigin } = require('./routing');
+const { bindClientIdentity } = require('./tunnel-identity');
+const { createTcpVisitorFilter } = require('./tcp-access');
 
 class TunnelManager {
   constructor(runtimeConfig) {
     this.runtimeConfig = runtimeConfig || {};
     this.tunnels = new Map();
     this.httpHosts = new Map();
+    const idleTimeout = Number(this.runtimeConfig.requestIdleTimeoutMs ?? 30000);
+    if (!Number.isSafeInteger(idleTimeout) || idleTimeout < 50 || idleTimeout > 3600000) {
+      throw new Error('HTTP_IDLE_TIMEOUT_MS must be an integer between 50 and 3600000.');
+    }
+    this.requestIdleTimeoutMs = idleTimeout;
+    if (this.runtimeConfig.tcpBindHost && !net.isIP(this.runtimeConfig.tcpBindHost)) {
+      throw new Error('TCP_BIND_HOST must be a local interface IP address.');
+    }
+    this.allowTcpVisitor = createTcpVisitorFilter(this.runtimeConfig.tcpVisitorAllowlist || '');
   }
 
   handleNewClient(ws, clientIp) {
@@ -109,18 +120,29 @@ class TunnelManager {
       console.error('[TunnelManager] WebSocket error:', err.message);
     });
 
+    ws.tunnelMissedPongs = 0;
     const pingInterval = setInterval(() => {
       if (ws.readyState === ws.OPEN) {
+        if (ws.tunnelMissedPongs >= 2) {
+          clearInterval(pingInterval);
+          ws.terminate();
+          return;
+        }
+        ws.tunnelMissedPongs++;
         sendControl(ws, { type: MSG.PING });
       } else {
         clearInterval(pingInterval);
       }
     }, 30000);
+    pingInterval.unref?.();
 
     ws.on('close', () => clearInterval(pingInterval));
   }
 
   async _handleControlMessage(ws, msg, currentTunnelKey, clientIp, setTunnelKey) {
+    if (msg.type === MSG.TUNNEL_OPEN || msg.type === MSG.TUNNEL_CHECK) {
+      msg = { ...msg, clientId: bindClientIdentity(ws.tunnelPrincipal, msg.clientId) };
+    }
     if (currentTunnelKey && this.tunnels.get(currentTunnelKey)?.ws !== ws) {
       currentTunnelKey = null;
       setTunnelKey(null);
@@ -138,6 +160,10 @@ class TunnelManager {
           return;
         }
         const selectedVersion = msg.dataTransportVersions?.includes(DATA_TRANSPORT_VERSION) ? DATA_TRANSPORT_VERSION : 1;
+        if (selectedVersion !== DATA_TRANSPORT_VERSION && this.runtimeConfig.requireDataTransportV4) {
+          sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'Update your client: this server requires data transport v4.' });
+          return;
+        }
         if ((currentTunnelKey || getTransportVersion(ws) === DATA_TRANSPORT_VERSION)
           && selectedVersion !== getTransportVersion(ws)) {
           sendControl(ws, {type: MSG.TUNNEL_ERROR, message: 'Reconnect to change the data transport.'});
@@ -227,6 +253,7 @@ class TunnelManager {
           }
           pending.res.writeHead(msg.statusCode, headers);
           pending.statusCode = msg.statusCode;
+          pending.timeout?.refresh?.();
         } catch {
           this._failPendingResponse(tunnel, msg.requestId, 'Invalid response metadata');
         }
@@ -253,24 +280,12 @@ class TunnelManager {
         const tunnel = this.tunnels.get(currentTunnelKey);
         if (!tunnel) return;
 
-        const pending = tunnel.pendingRequests.get(msg.requestId);
-        if (!pending) return;
-
-        clearTimeout(pending.timeout);
-        if (!pending.res.destroyed) {
-          if (!pending.res.headersSent) {
-            pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
-          }
-          pending.res.end(`Tunnel error: ${msg.message || 'Unknown error'}`);
-        }
-        pending.statusCode = 502;
-        pending.error = msg.message;
-        this._logCompletedRequest(tunnel, pending);
-        tunnel.pendingRequests.delete(msg.requestId);
+        this._failPendingResponse(tunnel, msg.requestId, msg.message || 'Unknown error', { notifyPeer: false });
         break;
       }
 
       case MSG.PONG:
+        ws.tunnelMissedPongs = 0;
         break;
 
       case MSG.TUNNEL_CLOSE: {
@@ -811,6 +826,7 @@ class TunnelManager {
         try {
           if (writeFrame(tunnel.ws, frame, pending.res)) {
             tunnel.stats.bytesOut += frame.data.length;
+            pending.timeout?.refresh?.();
           } else {
             this._failPendingResponse(tunnel, frame.requestId, 'Response buffer limit exceeded');
           }
@@ -837,33 +853,34 @@ class TunnelManager {
     }
   }
 
-  _failPendingResponse(tunnel, requestId, message) {
+  _failPendingResponse(tunnel, requestId, message, { statusCode = 502, notifyPeer = true } = {}) {
     const pending = tunnel.pendingRequests.get(requestId);
     if (!pending) return;
     tunnel.pendingRequests.delete(requestId);
     clearTimeout(pending.timeout);
-    pending.statusCode = 502;
+    pending.statusCode = pending.res.headersSent ? (pending.statusCode || 200) : statusCode;
     pending.error = message;
     try {
       if (!pending.res.destroyed) {
         if (pending.res.headersSent) pending.res.destroy();
         else {
-          pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
-          pending.res.end('Bad Gateway');
+          pending.res.writeHead(statusCode, { 'Content-Type': 'text/plain' });
+          pending.res.end(statusCode === 504 ? 'Gateway Timeout' : 'Bad Gateway');
         }
       }
     } catch {
       try { pending.res.destroy(); } catch {}
     }
     this._logCompletedRequest(tunnel, pending);
-    sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message });
+    if (notifyPeer) sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message });
   }
 
   _startTcpServer(ws, tunnel) {
     const modern = getTransportVersion(ws) === DATA_TRANSPORT_VERSION;
     const server = net.createServer({allowHalfOpen: modern}, (sock) => {
       if (ws.readyState !== ws.OPEN || this.tunnels.get(tunnel.tunnelKey) !== tunnel
-        || (modern && !tunnel.ready) || tunnel.tcpConnections.size >= 128) {
+        || (modern && !tunnel.ready) || tunnel.tcpConnections.size >= 128
+        || !this.allowTcpVisitor(sock.remoteAddress)) {
         sock.destroy();
         return;
       }
@@ -945,7 +962,8 @@ class TunnelManager {
       });
       try {
         // The actual listener keeps the OS-assigned port reserved throughout setup.
-        server.listen(0);
+        if (this.runtimeConfig.tcpBindHost) server.listen(0, this.runtimeConfig.tcpBindHost);
+        else server.listen(0);
         if (ws.readyState !== ws.OPEN) onDisconnect();
       } catch (error) {
         finish(error);
@@ -981,15 +999,7 @@ class TunnelManager {
 
     for (const [requestId, pending] of tunnel.pendingRequests) {
       cancelStream(tunnel.ws, requestId);
-      clearTimeout(pending.timeout);
-      try {
-        if (!pending.res.destroyed) {
-          if (!pending.res.headersSent) {
-            pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
-          }
-          pending.res.end('Tunnel disconnected');
-        }
-      } catch {}
+      this._failPendingResponse(tunnel, requestId, 'Tunnel disconnected', { notifyPeer: false });
     }
     tunnel.pendingRequests.clear();
 

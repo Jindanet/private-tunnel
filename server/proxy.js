@@ -2,8 +2,6 @@ const { MSG, FRAME_REQUEST_BODY, DATA_TRANSPORT_VERSION, generateRequestId, send
 const { normalizeDomain } = require('./routing');
 const { clientIp } = require('./security');
 
-const REQUEST_TIMEOUT = 30000;
-
 function handleProxy(req, res, publicHost, tunnelManager) {
   const host = normalizeDomain(publicHost);
   const tunnel = tunnelManager.getHttpTunnel(host);
@@ -37,15 +35,9 @@ function handleProxy(req, res, publicHost, tunnelManager) {
   const visitorIp = clientIp(req);
 
   const timeout = setTimeout(() => {
-    if (tunnel.pendingRequests.has(requestId)) {
-      tunnel.pendingRequests.delete(requestId);
-      sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message: 'Gateway Timeout' });
-      if (!res.destroyed) {
-        if (!res.headersSent) res.writeHead(504, { 'Content-Type': 'text/plain' });
-        res.end('Gateway Timeout');
-      }
-    }
-  }, REQUEST_TIMEOUT);
+    tunnelManager._failPendingResponse(tunnel, requestId, 'Gateway Timeout', { statusCode: 504 });
+  }, tunnelManager.requestIdleTimeoutMs || 30000);
+  timeout.unref?.();
 
   // Register pending request with visitor details
   tunnel.pendingRequests.set(requestId, {
@@ -65,6 +57,8 @@ function handleProxy(req, res, publicHost, tunnelManager) {
 
   // Track bytes in
   req.on('data', (chunk) => {
+    if (!tunnel.pendingRequests.has(requestId)) return;
+    timeout.refresh();
     tunnel.stats.bytesIn += chunk.length;
     if (!sendData(tunnel.ws, FRAME_REQUEST_BODY, requestId, chunk, req)) {
       tunnelManager._failPendingResponse(tunnel, requestId, 'Request queue limit exceeded');
@@ -88,6 +82,8 @@ function handleProxy(req, res, publicHost, tunnelManager) {
   }
 
   req.on('end', () => {
+    if (!tunnel.pendingRequests.has(requestId)) return;
+    timeout.refresh();
     sendControl(tunnel.ws, { type: MSG.STREAM_END, requestId, direction: 'request' });
   });
 
