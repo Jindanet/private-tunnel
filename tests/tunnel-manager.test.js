@@ -20,13 +20,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function fixture({ db: overrides = {}, autoListen = true, assignedPorts = [] } = {}) {
+function fixture({
+  db: overrides = {}, autoListen = true, occupiedPorts = [], bindError = () => null,
+  runtimeConfig = {}, firewallOpen = () => true,
+} = {}) {
   const servers = [];
+  const listenAttempts = [];
+  const reservedPorts = new Map();
+  const occupied = new Set(occupiedPorts);
   const openedPorts = [];
   const closedPorts = [];
   let label = 0;
-  let nextPort = 41000;
-  const ports = [...assignedPorts];
   const db = {
     getClientMapping: async () => null,
     getClientMappingByAssignedHost: async () => null,
@@ -42,21 +46,49 @@ function fixture({ db: overrides = {}, autoListen = true, assignedPorts = [] } =
       const server = new EventEmitter();
       server.closed = false;
       server.bound = false;
+      let pending = false;
+      let attempt = 0;
+      servers.push(server);
       if (onConnection) server.on('connection', onConnection);
       server.completeListen = () => {
-        if (server.closed) return;
+        if (server.closed || !pending) return;
+        pending = false;
         server.bound = true;
         server.emit('listening');
       };
       server.listen = (requestedPort) => {
+        assert.ok(Number.isInteger(requestedPort) && requestedPort >= 1024 && requestedPort <= 65535,
+          'The actual listener must request a specific non-privileged TCP port');
+        const currentAttempt = ++attempt;
+        listenAttempts.push(requestedPort);
+        server.closed = false;
         server.requestedPort = requestedPort;
-        server.port = ports.shift() ?? nextPort++;
-        servers.push(server);
-        if (autoListen) queueMicrotask(server.completeListen);
+        server.port = requestedPort;
+        const failure = occupied.has(requestedPort) || reservedPorts.has(requestedPort)
+          ? 'EADDRINUSE' : bindError(requestedPort);
+        if (failure) {
+          const error = typeof failure === 'string' ? Object.assign(new Error(failure), { code: failure }) : failure;
+          queueMicrotask(() => {
+            if (!server.closed && attempt === currentAttempt) server.emit('error', error);
+          });
+        } else {
+          pending = true;
+          reservedPorts.set(requestedPort, server);
+          if (autoListen) queueMicrotask(() => {
+            if (attempt === currentAttempt) server.completeListen();
+          });
+        }
         return server;
       };
       server.address = () => server.bound ? { address: '::', family: 'IPv6', port: server.port } : null;
-      server.close = (callback) => { server.closed = true; server.bound = false; if (callback) callback(); return server; };
+      server.close = (callback) => {
+        server.closed = true;
+        server.bound = false;
+        pending = false;
+        if (reservedPorts.get(server.port) === server) reservedPorts.delete(server.port);
+        if (callback) callback();
+        return server;
+      };
       return server;
     },
   };
@@ -64,7 +96,10 @@ function fixture({ db: overrides = {}, autoListen = true, assignedPorts = [] } =
   vm.runInNewContext(source, {
     require(name) {
       if (name === './db') return db;
-      if (name === './firewall') return { openPort: (port) => openedPorts.push(port), closePort: (port) => closedPorts.push(port) };
+      if (name === './firewall') return {
+        openPort: (port) => { openedPorts.push(port); return firewallOpen(port); },
+        closePort: (port) => closedPorts.push(port),
+      };
       if (name === 'node:net') return net;
       if (name === './subdomain') return { generate: () => `generated-${++label}`, RESERVED: new Set() };
       return localRequire(name);
@@ -74,12 +109,23 @@ function fixture({ db: overrides = {}, autoListen = true, assignedPorts = [] } =
     setInterval: () => ({}),
     clearInterval() {},
     clearTimeout,
+    setImmediate,
+    clearImmediate,
     console: { log() {}, error() {} },
   }, { filename: sourcePath });
   const manager = new module.exports({
     publishDomains: [{ domain: 'publish.example.test', allowRoot: true, allowSubdomain: true }],
+    ...runtimeConfig,
   });
-  return { manager, db, servers, openedPorts, closedPorts };
+  return { manager, db, servers, listenAttempts, reservedPorts, openedPorts, closedPorts };
+}
+
+async function waitFor(predicate, message) {
+  const deadline = Date.now() + 15000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message);
+    await flush();
+  }
 }
 
 function socket() {
@@ -118,6 +164,7 @@ function activeTunnel(manager, ws, { tcp = false } = {}) {
     publicHost: 'publish.example.test',
     label: 'test-host',
   });
+  tunnel.ready = true;
   if (tcp) {
     tunnel.tcpConnections = new Map();
     tunnel.tcpPort = 41000;
@@ -310,6 +357,215 @@ test('a failed active HTTP save releases its registration and permits a later op
   ws.close();
 });
 
+const tcpPortOrder = [
+  ...Array.from({ length: 10001 }, (_, index) => 30000 + index),
+  ...Array.from({ length: 25535 }, (_, index) => 40001 + index),
+  ...Array.from({ length: 28976 }, (_, index) => 1024 + index),
+];
+
+test('TCP allocation starts at 30000 and publishes the actual listener without a probe', async () => {
+  const { manager, servers, listenAttempts, reservedPorts, openedPorts } = fixture();
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await flush();
+  const assigned = ws.messages.find((message) => message.type === MSG.TUNNEL_ASSIGNED);
+  assert.equal(assigned.tcpPort, 30000);
+  assert.equal(assigned.url, 'publish.example.test:30000');
+  assert.deepEqual(listenAttempts, [30000]);
+  assert.equal(servers.length, 1);
+  assert.equal(servers[0].closed, false);
+  assert.equal(servers[0].bound, true);
+  assert.equal(manager.tunnels.get('tcp:30000').tcpServer, servers[0]);
+  assert.equal(reservedPorts.get(30000), servers[0]);
+  assert.deepEqual(openedPorts, [30000]);
+  ws.close();
+  assert.equal(reservedPorts.size, 0);
+});
+
+test('TCP allocation skips occupied and access-denied ports before publishing a reachable listener', async () => {
+  const { manager, listenAttempts, reservedPorts, openedPorts, closedPorts } = fixture({
+    occupiedPorts: [30000, 30002],
+    bindError: (port) => port === 30001 ? 'EACCES' : null,
+  });
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await waitFor(() => ws.messages.length > 0, 'TCP allocation did not skip unavailable ports');
+  assert.equal(ws.messages[0].type, MSG.TUNNEL_ASSIGNED);
+  assert.equal(ws.messages[0].tcpPort, 30003);
+  assert.deepEqual(listenAttempts, [30000, 30001, 30002, 30003]);
+  assert.deepEqual([...reservedPorts.keys()], [30003]);
+  assert.deepEqual(openedPorts, [30003]);
+  assert.deepEqual(closedPorts, []);
+  ws.close();
+  assert.deepEqual(closedPorts, [30003]);
+});
+
+test('the default TCP allowance stops at 40000 instead of publishing a blocked fallback port', async () => {
+  const { manager, listenAttempts, reservedPorts, openedPorts } = fixture({ bindError: () => 'EADDRINUSE' });
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await waitFor(() => ws.messages.length > 0, 'TCP allocation did not stop at the default firewall allowance');
+  assert.equal(ws.messages[0].type, MSG.TUNNEL_ERROR);
+  assert.deepEqual(listenAttempts, tcpPortOrder.slice(0, 10001));
+  assert.equal(listenAttempts.includes(40001), false);
+  assert.equal(manager.tunnels.size, 0);
+  assert.equal(reservedPorts.size, 0);
+  assert.deepEqual(openedPorts, []);
+  ws.close();
+});
+
+test('TCP allocation skips ports outside the declared firewall allowance in each range', async () => {
+  const { manager, listenAttempts, openedPorts } = fixture({
+    occupiedPorts: [30002, 40001],
+    runtimeConfig: { tcpAllowedPorts: '1024,30002,40001-40002' },
+  });
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await waitFor(() => ws.messages.length > 0, 'TCP allocation did not reach an explicitly allowed fallback port');
+  assert.equal(ws.messages[0].type, MSG.TUNNEL_ASSIGNED);
+  assert.equal(ws.messages[0].tcpPort, 40002);
+  assert.deepEqual(listenAttempts, [30002, 40001, 40002]);
+  assert.deepEqual(openedPorts, [40002]);
+  ws.close();
+});
+
+test('TCP assignment is sent only after the selected port has been allowed through the firewall', async () => {
+  let allowed = false;
+  const { manager, servers } = fixture({ firewallOpen: (port) => {
+    assert.equal(port, 30000);
+    assert.equal(ws.messages.some((message) => message.type === MSG.TUNNEL_ASSIGNED), false);
+    const visitor = new EventEmitter();
+    visitor.destroy = () => { visitor.destroyed = true; };
+    servers[0].emit('connection', visitor);
+    assert.equal(visitor.destroyed, true, 'Visitors cannot enter the tunnel before firewall setup and assignment');
+    allowed = true;
+    return true;
+  } });
+  const ws = socket();
+  const send = ws.send;
+  ws.send = (payload) => {
+    if (JSON.parse(payload.toString()).type === MSG.TUNNEL_ASSIGNED) assert.equal(allowed, true);
+    send(payload);
+  };
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await flush();
+  assert.equal(ws.messages.at(-1).type, MSG.TUNNEL_ASSIGNED);
+  ws.close();
+});
+
+test('TCP firewall failures release the actual listener without assigning or scanning another port', async () => {
+  for (const failure of ['false', 'throw']) {
+    const { manager, servers, listenAttempts, reservedPorts, openedPorts, closedPorts } = fixture({
+      firewallOpen: () => {
+        if (failure === 'throw') throw new Error('Firewall rule rejected');
+        return false;
+      },
+    });
+    const ws = socket();
+    manager.handleNewClient(ws, '127.0.0.1');
+    ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+    await flush();
+    assert.equal(ws.messages.at(-1).type, MSG.TUNNEL_ERROR, failure);
+    assert.equal(ws.messages.some((message) => message.type === MSG.TUNNEL_ASSIGNED), false, failure);
+    assert.deepEqual(listenAttempts, [30000], failure);
+    assert.deepEqual(openedPorts, [30000], failure);
+    assert.deepEqual(closedPorts, [30000], failure);
+    assert.equal(servers[0].closed, true, failure);
+    assert.equal(manager.tunnels.size, 0, failure);
+    assert.equal(reservedPorts.size, 0, failure);
+    ws.close();
+  }
+});
+
+for (const [port, description] of [
+  [40000, 'includes the last preferred port'],
+  [40001, 'uses the higher range only after every preferred port is unavailable'],
+  [65535, 'includes the last higher-range port'],
+  [1024, 'tries the lower range only after all preferred and higher ports are unavailable'],
+  [29999, 'includes the final non-privileged candidate'],
+]) {
+  test(`TCP allocation ${description}`, { timeout: 20000 }, async () => {
+    const { manager, listenAttempts, openedPorts, reservedPorts } = fixture({
+      bindError: (candidate) => candidate === port ? null : 'EADDRINUSE',
+      runtimeConfig: { tcpAllowedPorts: '1024-65535' },
+    });
+    const ws = socket();
+    manager.handleNewClient(ws, '127.0.0.1');
+    ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+    await waitFor(() => ws.messages.length > 0, `TCP allocation did not reach ${port}`);
+    assert.equal(ws.messages[0].type, MSG.TUNNEL_ASSIGNED);
+    assert.equal(ws.messages[0].tcpPort, port);
+    assert.deepEqual(listenAttempts, tcpPortOrder.slice(0, tcpPortOrder.indexOf(port) + 1));
+    assert.deepEqual(openedPorts, [port]);
+    assert.deepEqual([...reservedPorts.keys()], [port]);
+    ws.close();
+  });
+}
+
+test('TCP allocation exhausts each non-privileged port once and returns a bounded error', { timeout: 20000 }, async () => {
+  const { manager, listenAttempts, reservedPorts, openedPorts, closedPorts } = fixture({
+    bindError: () => 'EADDRINUSE', runtimeConfig: { tcpAllowedPorts: '1024-65535' },
+  });
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await waitFor(() => ws.messages.length > 0, 'TCP allocation did not stop after exhausting the allowed ports');
+  assert.equal(ws.messages[0].type, MSG.TUNNEL_ERROR);
+  assert.match(ws.messages[0].message, /no .*available|unavailable|exhaust/i);
+  assert.deepEqual(listenAttempts, tcpPortOrder);
+  await flush();
+  assert.equal(listenAttempts.length, 64512);
+  assert.equal(manager.tunnels.size, 0);
+  assert.equal(reservedPorts.size, 0);
+  assert.deepEqual(openedPorts, []);
+  assert.deepEqual(closedPorts, []);
+  ws.close();
+});
+
+test('a fatal TCP bind error stops allocation without scanning later candidates', async () => {
+  const { manager, servers, listenAttempts, reservedPorts, openedPorts } = fixture({ bindError: () => 'EAFNOSUPPORT' });
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await flush();
+  assert.equal(ws.messages.at(-1).type, MSG.TUNNEL_ERROR);
+  assert.deepEqual(listenAttempts, [30000]);
+  assert.equal(servers[0].closed, true);
+  assert.equal(manager.tunnels.size, 0);
+  assert.equal(reservedPorts.size, 0);
+  assert.deepEqual(openedPorts, []);
+  ws.close();
+});
+
+test('disconnecting with a queued TCP bind retry cancels scanning and publication', async () => {
+  const { manager, servers, listenAttempts, reservedPorts, openedPorts, closedPorts } = fixture({ autoListen: false });
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  const start = manager._startTcpServer.bind(manager);
+  let settled = false;
+  manager._startTcpServer = (...args) => start(...args).finally(() => { settled = true; });
+  ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
+  await flush();
+  servers[0].emit('error', Object.assign(new Error('Port occupied'), { code: 'EADDRINUSE' }));
+  assert.deepEqual(listenAttempts, [30000], 'Unavailable ports must yield before the next bind');
+  ws.close();
+  await flush();
+  await flush();
+  assert.equal(settled, true);
+  assert.deepEqual(listenAttempts, [30000]);
+  assert.equal(servers.every((server) => server.closed), true);
+  assert.equal(reservedPorts.size, 0);
+  assert.equal(manager.tunnels.size, 0);
+  assert.deepEqual(openedPorts, []);
+  assert.deepEqual(closedPorts, []);
+  assert.deepEqual(ws.messages, []);
+});
+
 test('closing during a pending TCP bind settles opening and closes the listener without publication', async () => {
   const { manager, openedPorts, closedPorts, servers } = fixture({ autoListen: false });
   const ws = socket();
@@ -320,7 +576,7 @@ test('closing during a pending TCP bind settles opening and closes the listener 
   ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
   await flush();
   assert.equal(servers.length, 1);
-  assert.equal(servers[0].requestedPort, 0);
+  assert.equal(servers[0].requestedPort, 30000);
   assert.equal(manager.tunnels.size, 0);
   ws.close();
   servers[0].completeListen();
@@ -358,46 +614,46 @@ test('closing during TCP save closes the listener and firewall once without a la
   ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp', clientId: 'profile-one' });
   await flush();
   assert.equal(manager.tunnels.size, 1);
-  assert.deepEqual(openedPorts, [41000]);
+  assert.deepEqual(openedPorts, [30000]);
   ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp', clientId: 'profile-two' });
   await flush();
   assert.equal(servers.length, 1);
   ws.close();
   assert.equal(servers[0].closed, true);
-  assert.deepEqual(closedPorts, [41000]);
+  assert.deepEqual(closedPorts, [30000]);
   save.resolve();
   await flush();
   assert.equal(manager.tunnels.size, 0);
-  assert.deepEqual(closedPorts, [41000]);
+  assert.deepEqual(closedPorts, [30000]);
   assert.equal(ws.messages.some((msg) => msg.type === MSG.TUNNEL_ASSIGNED), false);
 });
 
-test('concurrent TCP opens publish distinct OS-assigned ports only after their actual listeners bind', async () => {
-  const { manager, servers, openedPorts, closedPorts } = fixture({ autoListen: false, assignedPorts: [42001, 52002] });
+test('concurrent TCP opens reserve distinct requested ports until their actual listeners bind', async () => {
+  const { manager, servers, listenAttempts, reservedPorts, openedPorts, closedPorts } = fixture({ autoListen: false });
   const one = socket();
   const two = socket();
   manager.handleNewClient(one, '127.0.0.1');
   manager.handleNewClient(two, '127.0.0.2');
   one.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
   two.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
-  await flush();
-  assert.equal(servers.length, 2);
-  assert.deepEqual(servers.map((server) => server.requestedPort), [0, 0]);
+  await waitFor(() => reservedPorts.size === 2, 'Concurrent opens did not reserve two distinct listeners');
+  assert.deepEqual(listenAttempts, [30000, 30000, 30001]);
   assert.equal(manager.tunnels.size, 0);
   assert.equal(openedPorts.length, 0);
   assert.equal(one.messages.length + two.messages.length, 0);
   for (const server of servers) server.completeListen();
   await flush();
   assert.equal(manager.tunnels.size, 2);
-  assert.deepEqual(openedPorts, [42001, 52002]);
-  for (const [ws, port] of [[one, 42001], [two, 52002]]) {
+  assert.deepEqual(openedPorts, [30000, 30001]);
+  for (const [ws, port] of [[one, 30000], [two, 30001]]) {
     const assigned = ws.messages.find((msg) => msg.type === MSG.TUNNEL_ASSIGNED);
     assert.equal(assigned.tcpPort, port);
     assert.equal(assigned.url, `publish.example.test:${port}`);
     assert.equal(manager.tunnels.get(`tcp:${port}`).ws, ws);
     ws.close();
   }
-  assert.deepEqual(closedPorts, [42001, 52002]);
+  assert.deepEqual(closedPorts, [30000, 30001]);
+  assert.equal(reservedPorts.size, 0);
   assert.equal(manager.tunnels.size, 0);
 });
 
@@ -426,14 +682,14 @@ test('TCP listener failure releases its registration, reserved port and firewall
   await flush();
   servers[0].emit('error', new Error('Address in use'));
   assert.equal(manager.tunnels.size, 0);
-  assert.deepEqual(closedPorts, [41000]);
+  assert.deepEqual(closedPorts, [30000]);
   assert.equal(ws.messages.at(-1).type, MSG.TUNNEL_ERROR);
   ws.close();
 });
 
 test('a stale TCP socket cannot write to or remove another socket that reuses its released port', async () => {
   for (const action of ['close', 'reopen']) {
-    const { manager, servers } = fixture({ assignedPorts: [41000, 41000, 41001] });
+    const { manager, servers, listenAttempts } = fixture();
     const old = socket();
     manager.handleNewClient(old, '127.0.0.1');
     old.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
@@ -443,7 +699,7 @@ test('a stale TCP socket cannot write to or remove another socket that reuses it
     manager.handleNewClient(next, '127.0.0.2');
     next.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
     await flush();
-    const replacement = manager.tunnels.get('tcp:41000');
+    const replacement = manager.tunnels.get('tcp:30000');
     const destination = response();
     replacement.tcpConnections.set(requestId, destination);
     old.emit('message', encodeDataFrame(FRAME_TCP_DATA, requestId, Buffer.from('unrelated')), true);
@@ -451,10 +707,12 @@ test('a stale TCP socket cannot write to or remove another socket that reuses it
     if (action === 'close') old.close();
     else {
       old.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
-      await flush();
+      await waitFor(() => manager.tunnels.size === 2, 'Reopening the old socket did not allocate the next available port');
       assert.equal(manager.tunnels.size, 2);
+      assert.equal(manager.tunnels.get('tcp:30001').ws, old);
     }
-    assert.equal(manager.tunnels.get('tcp:41000'), replacement);
+    assert.equal(manager.tunnels.get('tcp:30000'), replacement);
+    assert.deepEqual(listenAttempts.slice(0, 2), [30000, 30000]);
     old.close();
     next.close();
   }

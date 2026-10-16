@@ -1,6 +1,6 @@
 {
   "name": "privatetunnel",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "ngrok-like tunnel system - expose local servers to the internet",
   "author": "Jindanet",
   "license": "MIT",

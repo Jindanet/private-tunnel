@@ -1,11 +1,15 @@
 # Linux host networking keeps Nginx -> PrivateTunnel on trusted loopback.
 # Do not use bridge networking without implementing an explicit trusted-proxy policy.
-# TCP ports are OS-assigned host listeners: allow each displayed port in external
-# firewalls/NAT after allocation. Static Docker port mappings cannot predict them.
+# TCP_ALLOWED_PORTS defaults to 30000-40000 inclusive; preopen it in host/cloud
+# firewalls and any NAT. It declares policy, not verified external reachability.
+# Additional fallback ports must be opened first, then declared in .env.
+# Priority: 30000-40000, 40001-65535, 1024-29999; skip occupied/disallowed ports.
+# Exhausted eligible ports fail; no privileged ports or ephemeral/port-0 fallback.
+# Host networking requires no Docker port mappings. Test public access externally.
 services:
   private-tunnel:
     build: .
-    image: private-tunnel:1.1.0
+    image: private-tunnel:1.2.2
     network_mode: host
     init: true
     restart: unless-stopped

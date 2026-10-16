@@ -10,6 +10,7 @@ const { openPort, closePort } = require('./firewall');
 const { normalizeDomain, buildHttpHost, getTcpAddress, getTunnelHttpOrigin } = require('./routing');
 const { bindClientIdentity } = require('./tunnel-identity');
 const { createTcpVisitorFilter } = require('./tcp-access');
+const { parseTcpAllowedPorts, publicTcpPorts } = require('./tcp-ports');
 
 class TunnelManager {
   constructor(runtimeConfig) {
@@ -25,6 +26,7 @@ class TunnelManager {
       throw new Error('TCP_BIND_HOST must be a local interface IP address.');
     }
     this.allowTcpVisitor = createTcpVisitorFilter(this.runtimeConfig.tcpVisitorAllowlist || '');
+    this.tcpPortRanges = parseTcpAllowedPorts(this.runtimeConfig.tcpAllowedPorts);
   }
 
   handleNewClient(ws, clientIp) {
@@ -406,7 +408,9 @@ class TunnelManager {
     this.tunnels.set(tunnelKey, tunnel);
     setTunnelKey(tunnelKey);
     try {
-      openPort(tcpPort);
+      if (openPort(tcpPort, { host: this.runtimeConfig.tcpBindHost }) !== true) {
+        throw new Error('Could not open the TCP firewall rule. Configure the firewall and TCP_ALLOWED_PORTS before retrying.');
+      }
     } catch (error) {
       this._removeTunnel(tunnelKey, tunnel);
       setTunnelKey(null);
@@ -879,7 +883,7 @@ class TunnelManager {
     const modern = getTransportVersion(ws) === DATA_TRANSPORT_VERSION;
     const server = net.createServer({allowHalfOpen: modern}, (sock) => {
       if (ws.readyState !== ws.OPEN || this.tunnels.get(tunnel.tunnelKey) !== tunnel
-        || (modern && !tunnel.ready) || tunnel.tcpConnections.size >= 128
+        || !tunnel.ready || tunnel.tcpConnections.size >= 128
         || !this.allowTcpVisitor(sock.remoteAddress)) {
         sock.destroy();
         return;
@@ -922,9 +926,16 @@ class TunnelManager {
     tunnel.tcpServer = server;
     return new Promise((resolve, reject) => {
       let settled = false;
+      let allocatedPort = null;
+      let candidatePort = null;
+      let retry = null;
+      const ports = publicTcpPorts(this.tcpPortRanges);
       const finish = (error, port) => {
         if (settled) return;
         settled = true;
+        allocatedPort = port || null;
+        if (retry) clearImmediate(retry);
+        retry = null;
         ws.removeListener('close', onDisconnect);
         server.removeListener('listening', onListening);
         if (error || !port) {
@@ -936,7 +947,7 @@ class TunnelManager {
       const onDisconnect = () => finish(null, null);
       const onListening = () => {
         const address = server.address();
-        if (!address || !Number.isInteger(address.port) || address.port < 1) {
+        if (!address || address.port !== candidatePort) {
           finish(new Error('Could not determine the public TCP port.'));
           return;
         }
@@ -947,27 +958,50 @@ class TunnelManager {
         console.log(`[TCP] Listening on port ${address.port} for tunnel ${tunnel.label}`);
         finish(null, address.port);
       };
-      ws.once('close', onDisconnect);
-      server.once('listening', onListening);
-      server.on('error', (error) => {
-        console.error(`[TCP] Server error on port ${tunnel.tcpPort || 'pending'}:`, error.message);
+      const onError = (error) => {
         if (!settled) {
+          if (error.code === 'EADDRINUSE' || error.code === 'EACCES') {
+            // Windows can reserve/exclude a port even without an active listener.
+            // Yield between attempts so exhausted ranges cannot block other tunnels
+            // or delay cancellation when the client disconnects.
+            if (!retry) retry = setImmediate(listenNext);
+            return;
+          }
+          console.error(`[TCP] Could not bind port ${candidatePort}:`, error.message);
           finish(error);
           return;
         }
+        if (!allocatedPort) return;
+        console.error(`[TCP] Server error on port ${allocatedPort}:`, error.message);
         const removed = this._removeTunnel(tunnel.tunnelKey, tunnel);
         if (removed && ws.readyState === ws.OPEN) {
           sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'Could not listen on the allocated TCP port.' });
         }
-      });
-      try {
-        // The actual listener keeps the OS-assigned port reserved throughout setup.
-        if (this.runtimeConfig.tcpBindHost) server.listen(0, this.runtimeConfig.tcpBindHost);
-        else server.listen(0);
+      };
+      const listenNext = () => {
+        retry = null;
+        if (settled) return;
+        if (ws.readyState !== ws.OPEN) return onDisconnect();
+        const next = ports.next();
+        if (next.done) {
+          finish(new Error('No public TCP port is available in TCP_ALLOWED_PORTS. Allocation order: 30000-40000, 40001-65535, 1024-29999. Open firewall/NAT rules and configure TCP_ALLOWED_PORTS before using additional ports.'));
+          return;
+        }
+        candidatePort = next.value;
+        try {
+          // Keep the actual listener bound throughout setup; do not probe then
+          // release the candidate before binding the public tunnel.
+          if (this.runtimeConfig.tcpBindHost) server.listen(candidatePort, this.runtimeConfig.tcpBindHost);
+          else server.listen(candidatePort);
+        } catch (error) {
+          onError(error);
+        }
         if (ws.readyState !== ws.OPEN) onDisconnect();
-      } catch (error) {
-        finish(error);
-      }
+      };
+      ws.once('close', onDisconnect);
+      server.once('listening', onListening);
+      server.on('error', onError);
+      listenNext();
     });
   }
 

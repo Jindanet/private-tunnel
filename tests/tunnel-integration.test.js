@@ -10,7 +10,7 @@ const { once } = require('node:events');
 const TunnelClient = require('../client/tunnel-client');
 const { WebSocket } = require('ws');
 
-test('actual gateway/client forward HTTP and OS-assigned TCP, reject unauthorized upgrades and revoke connections', {timeout:20000}, async(t)=>{
+test('actual gateway/client forward HTTP and range-selected TCP, skip occupied ports and revoke connections', {timeout:20000}, async(t)=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ptunnel-integration-'));
   const reservations=await Promise.all([0,1,2].map(async()=>{
     const server=net.createServer();server.listen(0,'127.0.0.1');await once(server,'listening');return server;
@@ -20,18 +20,20 @@ test('actual gateway/client forward HTTP and OS-assigned TCP, reject unauthorize
   const child=spawn(process.execPath,[path.join(__dirname,'../server/index.js')],{cwd:path.join(__dirname,'..'),windowsHide:true,
     env:{...process.env,DB_PROVIDER:'sqlite',DB_SYNC_TARGETS:'',DB_BOOTSTRAP_SYNC:'false',DATA_DIR:directory,SQLITE_PATH:path.join(directory,'test.db'),
       WS_PORT:String(wsPort),DASHBOARD_PORT:String(dashboardPort),PROXY_PORT:String(proxyPort),INTERNAL_HOST:'127.0.0.1',PRIMARY_DOMAIN:'127.0.0.1',
-      TUNNEL_DOMAIN:'apps.example.net',TUNNEL_TOKEN:'integration-only-secret-at-least-32-characters',DASHBOARD_PASSWORD:'integration-only-password',AUTO_FIREWALL:'false',
+      TUNNEL_DOMAIN:'apps.example.net',TUNNEL_TOKEN:'integration-only-secret-at-least-32-characters',DASHBOARD_PASSWORD:'integration-only-password',AUTO_FIREWALL:'false',TCP_BIND_HOST:'127.0.0.1',TCP_ALLOWED_PORTS:'30000-40000',
       ALLOW_SHARED_TUNNEL_TOKEN:'true',ALLOW_LEGACY_QUERY_TOKEN:'false',ALLOW_UNAUTHENTICATED_TUNNELS:'false'}});
   let output='';child.stdout.on('data',(data)=>output+=data);child.stderr.on('data',(data)=>output+=data);
   let client;
   const tcpClients=[];
   const tcpSockets=new Set();
   let tcpLocal;
+  let occupiedTcpPort;
   const local=http.createServer((req,res)=>{let body='';req.on('data',(chunk)=>body+=chunk);req.on('end',()=>{res.setHeader('X-Integration','yes');res.end(req.method+' '+req.url+' '+body);});});
   t.after(async()=>{
     for(const tunnel of tcpClients)tunnel.disconnect();
     for(const socket of tcpSockets)socket.destroy();
     if(tcpLocal?.listening)await new Promise((resolve)=>tcpLocal.close(resolve));
+    if(occupiedTcpPort?.listening)await new Promise((resolve)=>occupiedTcpPort.close(resolve));
     client?.disconnect();await new Promise((resolve)=>local.close(resolve));
     child.kill();if(child.exitCode===null)await once(child,'exit');
     fs.rmSync(directory,{recursive:true,force:true});
@@ -79,6 +81,12 @@ test('actual gateway/client forward HTTP and OS-assigned TCP, reject unauthorize
     socket.on('data',(chunk)=>socket.write(chunk));
   });
   await new Promise((resolve)=>tcpLocal.listen(0,'127.0.0.1',resolve));
+  occupiedTcpPort=net.createServer();
+  await new Promise((resolve,reject)=>{
+    const onError=(error)=>['EADDRINUSE','EACCES'].includes(error.code)?resolve():reject(error);
+    occupiedTcpPort.once('error',onError);
+    occupiedTcpPort.listen(30000,'127.0.0.1',()=>{occupiedTcpPort.removeListener('error',onError);resolve();});
+  });
   const tcpAssignments=await Promise.all([2,3].map((suffix)=>new Promise((resolve,reject)=>{
     const tunnel=new TunnelClient({serverUrl:`ws://127.0.0.1:${wsPort}`,token:'integration-only-secret-at-least-32-characters',localHost:'127.0.0.1',localPort:tcpLocal.address().port,
       clientId:`10000000-0000-4000-8000-00000000000${suffix}`,tunnelType:'tcp',onConnected:resolve,onError:reject});
@@ -86,8 +94,9 @@ test('actual gateway/client forward HTTP and OS-assigned TCP, reject unauthorize
     tunnel.connect();
   })));
   const tcpPorts=tcpAssignments.map(({url})=>Number(new URL('tcp://'+url).port));
-  assert.ok(tcpPorts.every((port)=>Number.isInteger(port)&&port>0&&port<=65535));
-  assert.equal(new Set(tcpPorts).size,2,'Concurrent listeners keep distinct OS-assigned ports bound');
+  assert.ok(tcpPorts.every((port)=>Number.isInteger(port)&&port>=30001&&port<=40000),
+    'Public listeners skip occupied 30000 and prefer the 30000-40000 range');
+  assert.equal(new Set(tcpPorts).size,2,'Concurrent listeners reserve distinct public ports');
   const payload=Buffer.from([0,1,2,127,128,254,255,65,66,67]);
   await Promise.all(tcpPorts.map(async(port)=>{
     const visitor=net.connect(port,'127.0.0.1');

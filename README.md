@@ -2,7 +2,7 @@
 
 แชร์เว็บไซต์หรือบริการจากเครื่องของคุณผ่านเซิร์ฟเวอร์ที่ดูแลเอง รองรับแอปเดสก์ท็อปและคำสั่ง CLI ภาษาไทย/อังกฤษ
 
-Share a local website or TCP service through a server you control. Version **1.2.1** includes client-specific keys, owner-bound host reservations and streaming reliability. **Public multi-user hosting still requires independent review, capacity testing and operational controls**; see the limitations below.
+Share a local website or TCP service through a server you control. Version **1.2.2** includes client-specific keys, owner-bound host reservations, streaming reliability and firewall-aware TCP port allocation. **Public multi-user hosting still requires independent review, capacity testing and operational controls**; see the limitations below.
 
 ## เริ่มใช้งานด้วยแอป / Desktop quick start
 
@@ -24,7 +24,7 @@ Dark mode is the default for the desktop and administrator pages, including logi
 
 พอร์ตคือเลขท้ายที่อยู่เว็บไซต์ในเครื่อง เช่น `localhost:3000` ใช้พอร์ต `3000` ส่วน TCP ใช้กับบริการ เช่น เกมหรือ SSH และที่อยู่ที่ได้เป็น `host:port` ซึ่งต้องเปิดผ่านแอปของบริการนั้น
 
-สำหรับ TCP เซิร์ฟเวอร์จะเลือกพอร์ตสาธารณะให้อัตโนมัติ ใช้ที่อยู่ล่าสุดที่แอปแสดง และให้ผู้ดูแลเปิดพอร์ตนั้นในไฟร์วอลล์หรือเราเตอร์ก่อนเชื่อมต่อจากภายนอก
+สำหรับ TCP เซิร์ฟเวอร์จะเลือกพอร์ตสาธารณะในช่วง 30000–40000 โดยข้ามพอร์ตที่ใช้งานอยู่ ผู้ดูแลต้องเปิดช่วงนี้ในไฟร์วอลล์และเราเตอร์ก่อนใช้งาน หากต้องการใช้พอร์ตสำรอง ต้องเปิดพอร์ตเหล่านั้นและเพิ่มใน `TCP_ALLOWED_PORTS` ก่อน เซิร์ฟเวอร์จะไม่แจกพอร์ตนอกช่วงที่อนุญาต ใช้ที่อยู่ล่าสุดที่แอปแสดงเสมอ
 
 To run the desktop from source, install Node.js **22.12+** and run in this folder:
 
@@ -57,6 +57,8 @@ node client/bin/ptunnel.js http 3000 --domain apps.example.com
 node client/bin/ptunnel.js http 3000 --domain demo.example.net --root
 ```
 
+`ptunnel tcp 25565` publishes the local service on port `25565`; the server assigns its public port from **30000–40000 inclusive** by default, skipping occupied ports. The administrator must open those ports before use. Additional fallback ports are used only when the administrator has opened them and included them in `TCP_ALLOWED_PORTS`. Use the returned `host:port` in the service client.
+
 `--server` and `--token` belong to setup; do not combine them with a tunnel command. `npm link` optionally installs the short `ptunnel` command; check for a conflicting installation first. Profiles are stored in `~/.ptunnel` (Windows: `%USERPROFILE%\.ptunnel`). This file contains the access key. POSIX permissions are set to `0600`; restrict the user's Windows profile ACL too. Passing the key on the CLI can also leave it in shell history.
 
 ## เมื่อติดปัญหา / Common problems
@@ -68,6 +70,7 @@ node client/bin/ptunnel.js http 3000 --domain demo.example.net --root
 | Connection failed / reconnecting | Check internet access and the server address. Ask the administrator to check DNS, TLS and the server. |
 | Local service unavailable / 502 | Open `http://localhost:PORT` locally first and check the port in the sharing profile. |
 | Share address is `host:port` | This is TCP. Copy it into the game/SSH/service client; it is not a website URL. |
+| No available allowed TCP port | All eligible public ports are occupied or unavailable. The administrator must free a port, or open additional firewall/NAT ports and declare them in `TCP_ALLOWED_PORTS` before restarting the server. |
 | HMR, Socket.IO or app WebSockets do not connect | Application WebSocket upgrade passthrough is not supported. Use a normal HTTP workflow. |
 
 ## สำหรับผู้ดูแล / Set up a server
@@ -88,7 +91,11 @@ The three internal ports must remain private:
 | 8081 | Dashboard and admin API | Exact admin host + `/_private-tunnel/admin` |
 | 8082 | Published HTTP requests | Configured publish hosts |
 
-For each TCP tunnel, the server's operating system selects an available public port. Use the assigned `host:port` displayed in the client or dashboard; it can change after reconnecting or restarting the server. The administrator must allow that specific port in host/cloud firewalls and set up NAT forwarding where applicable. With the default `AUTO_FIREWALL=false`, PrivateTunnel does not create firewall rules. There is no configured public TCP port range. Run the process without root or Administrator privileges.
+For each TCP tunnel, the server selects only ports in `TCP_ALLOWED_PORTS`, which defaults to **30000–40000 inclusive**. This policy declares ports the administrator has already opened in host/cloud firewalls and router/NAT forwarding where applicable. If that range is already open, no additional environment configuration is needed. A successful local bind or policy declaration does not verify internet reachability; test from outside the server's network.
+
+Within that policy, allocation prefers **30000–40000**, then **40001–65535**, then **1024–29999**, all inclusive. It skips occupied ports and proceeds to each fallback only when every eligible port in the earlier ranges is unavailable. Open any additional ports before adding them to the policy, for example `TCP_ALLOWED_PORTS=30000-65535,25000-25010`. If all eligible ports are unavailable, tunnel creation fails without advertising an address; it never selects a port outside the policy, a privileged port (1–1023), or an OS-selected ephemeral port (`0`). The obsolete `TCP_PORT_MIN` and `TCP_PORT_MAX` settings do not configure allocation.
+
+Use the assigned `host:port` displayed in the client or dashboard; it can change after reconnecting or restarting the server. With the default `AUTO_FIREWALL=false`, PrivateTunnel does not create firewall rules. If legacy `AUTO_FIREWALL=true` is enabled, failure to open the local rule aborts tunnel creation before assignment; that option still cannot configure or verify cloud firewalls or NAT. Run the normal deployment without root or Administrator privileges and manage rules separately.
 
 `GET http://127.0.0.1:8081/healthz` is a local liveness probe. It does not confirm that DNS, TLS, a database mirror, public tunnels or clients are healthy. SIGINT/SIGTERM closes listeners and active tunnels; existing streams are interrupted, not drained to completion.
 
@@ -117,6 +124,7 @@ Any supplied access key must contain 32–4096 visible ASCII characters without 
 | `DASHBOARD_PASSWORD` | generated on first boot | Admin bootstrap password; ignored (including validation) when current/legacy DB credentials exist |
 | `DATA_DIR` | `./data` | Private runtime files |
 | `AUTO_FIREWALL` | `false` | Optional legacy privileged firewall automation |
+| `TCP_ALLOWED_PORTS` | `30000-40000` | Administrator-declared preopened public TCP ports; comma-separated ports/ranges; fallback requires explicit inclusion |
 | `TCP_BIND_HOST` | OS interfaces | Optional local interface IP for public TCP listeners |
 | `TCP_VISITOR_ALLOWLIST` | empty (public) | Optional comma-separated visitor IP addresses/CIDRs |
 | `ALLOW_SHARED_TUNNEL_TOKEN` | `false` | Restore legacy shared-key authentication for trusted migration only |
@@ -148,7 +156,7 @@ Back up `.env`, the database(s), data directory and client profiles before upgra
 - **Existing MySQL users must explicitly set `DB_PROVIDER=mysql` before upgrading if they relied on the old default.** The new default is SQLite; an omitted value can otherwise start a separate empty database.
 - Mirror targets are now empty by default and `DB_BOOTSTRAP_SYNC` defaults to false. Existing explicit environment values still apply. Review them before startup.
 - Internal listeners now bind to `127.0.0.1`. Put Nginx on the same host. Do not expose these ports to restore the old behavior.
-- Remove obsolete `TCP_PORT_MIN` and `TCP_PORT_MAX` environment entries. Public TCP ports are now selected by the operating system; check the displayed address and update firewall/NAT rules after each allocation.
+- Remove obsolete `TCP_PORT_MIN` and `TCP_PORT_MAX` environment entries. The current server defaults to `TCP_ALLOWED_PORTS=30000-40000`; open this range in firewalls/NAT before use. Additional preopened ports can be declared explicitly. Eligible ports follow the priority 30000–40000, then 40001–65535, then 1024–29999; a full allowed range fails safely instead of assigning an undeclared fallback.
 - Update clients: the access key now travels in `Authorization: Bearer ...`, not the WebSocket URL. Old query-token clients need the temporary `ALLOW_LEGACY_QUERY_TOKEN=true` switch. Disable it after updating clients and rotate any key that may be present in logs.
 - Missing access keys no longer mean an open server. A first boot with no stored key generates one; unauthenticated mode requires explicit opt-in.
 - Review access keys before restarting: nonempty environment keys must meet the 32–4096 visible-ASCII format and placeholder-prefix rules above or startup fails. Existing invalid stored keys keep administrator sign-in available but deny tunnel authentication; rotate the key in Settings before saving, then update all clients. Use a random key rather than extending a memorable password to the minimum length. Existing stored settings still take precedence over valid `.env` values.
@@ -164,7 +172,7 @@ The application control protocol remains version 1 in `shared/protocol.js`. Expl
 3. Replace the client's old shared key with its individual key. `ALLOW_SHARED_TUNNEL_TOKEN=false` is the default, so the old shared secret no longer authenticates. Temporary `true` restores the old trusted-team mode; it does not turn shared users into isolated identities. Legacy callers cannot assert an individual key's reserved identity namespace.
 4. Existing shared-key host reservations are not silently transferred to the first new key that asserts an old profile ID. Use a different hostname, or have the administrator release the old reservation in a controlled maintenance process. Reissue/rotation preserves new reservations; keep `client-keys.json` with the database when restoring. The registry is single-process state, not an HA key service; do not edit it while the service is running.
 5. Desktop profiles now use `~/.ptunnel-desktop.json`, with tokens encrypted using Electron `safeStorage` after OS credential storage is ready. The old `~/.ptunnel` CLI profile is imported read-only on first desktop startup and is never overwritten. An unavailable/locked keyring prevents persistent credentials and shows a setup error. Linux requires Secret Service or KWallet; plaintext `basic_text` storage is rejected. The CLI still uses its separate plaintext `0600` profile: remove/rotate any unused legacy key there and protect the account and backups.
-6. Remote client connections require `wss://`. Unencrypted `ws://` is allowed only for exact localhost/loopback development addresses. Public TCP remains a raw service; configure service TLS/authentication as required. `TCP_BIND_HOST` selects a local interface IP and `TCP_VISITOR_ALLOWLIST` accepts comma-separated visitor IPs/CIDRs. No fixed TCP allocation range is restored.
+6. Remote client connections require `wss://`. Unencrypted `ws://` is allowed only for exact localhost/loopback development addresses. Public TCP remains a raw service; configure service TLS/authentication as required. `TCP_BIND_HOST` selects a local interface IP and `TCP_VISITOR_ALLOWLIST` accepts comma-separated visitor IPs/CIDRs. The default public policy permits 30000–40000 only; open additional ports before declaring them in `TCP_ALLOWED_PORTS` to enable fallback.
 7. HTTP timeout is now **inactivity**, configured by `HTTP_IDLE_TIMEOUT_MS` (default 30000). Upload bytes, response headers and response data refresh only that request's timer. Active large transfers/SSE may exceed 30 seconds. If an idle/error/disconnect occurs after headers, the response is destroyed so the caller detects an incomplete transfer; gateway error text is never appended to the body. The public proxy has no separate total upload receipt deadline; header parsing remains bounded. Review reverse-proxy/application timeouts separately.
 8. Sign in and change any legacy SHA-256 administrator password before **2027-01-01 UTC**. Successful legacy sign-in upgrades to scrypt until that cutoff; legacy hashes are rejected from that date. Preserve a reviewed offline recovery/backup procedure for installations that miss this migration.
 
@@ -227,4 +235,4 @@ For the next patch release, run `npm version patch --no-git-tag-version`, commit
 
 The workflow can also be run manually on `main`, or by pushing a matching `vX.Y.Z` tag. Failed uploads leave an unpublished draft; re-run the original failed workflow to finish it. Published versions are never overwritten, tags never move, and versions older than Latest cannot become a new release. Bump the version for further code changes after a release. Build/test jobs have read-only repository access; only the final publishing job can write release metadata and assets, using the built-in `GITHUB_TOKEN` rather than an extra personal token.
 
-See [current release notes](deploy/RELEASE-1.2.1.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). Check the workflow result and Releases page to confirm publication; package metadata alone is not proof of a successful build.
+See [current release notes](deploy/RELEASE-1.2.2.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). Check the workflow result and Releases page to confirm publication; package metadata alone is not proof of a successful build.

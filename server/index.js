@@ -29,6 +29,7 @@ const runtimeConfig = {
   requireDataTransportV4: process.env.REQUIRE_DATA_TRANSPORT_V4 !== 'false',
   tcpBindHost: process.env.TCP_BIND_HOST || undefined,
   tcpVisitorAllowlist: process.env.TCP_VISITOR_ALLOWLIST || '',
+  tcpAllowedPorts: process.env.TCP_ALLOWED_PORTS,
 };
 let tunnelWebSockets = null;
 

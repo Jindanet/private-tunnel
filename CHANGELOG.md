@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 — 2026-10-16
+
+- Default public TCP allocation to 30000–40000, skipping occupied or OS-reserved ports while keeping the actual listener bound. Explicitly approved fallback ports are tried in 40001–65535, then 1024–29999; privileged and OS-selected ports are excluded.
+- Restrict allocation to the administrator-declared `TCP_ALLOWED_PORTS` firewall/NAT policy (default `30000-40000`). Exhaustion or automatic local firewall failure cancels tunnel creation before advertising an address. A declared policy does not verify public reachability.
+- Track uniquely owned automatic firewall rules, remove only those rules on cleanup, and reject visitor connections until TCP setup completes. Document the Windows out-of-range port issue and Linux deployment requirements.
+
 ## 1.2.1 — 2026-10-16
 
 - Check current and legacy administrator credentials in the database before consulting `DASHBOARD_PASSWORD`. A stale, short or placeholder bootstrap value no longer blocks an existing installation or changes its password.
