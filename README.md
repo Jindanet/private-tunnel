@@ -2,7 +2,7 @@
 
 แชร์เว็บไซต์หรือบริการจากเครื่องของคุณผ่านเซิร์ฟเวอร์ที่ดูแลเอง รองรับแอปเดสก์ท็อปและคำสั่ง CLI ภาษาไทย/อังกฤษ
 
-Share a local website or TCP service through a server you control. Version **1.2.0** adds client-specific keys, owner-bound host reservations and streaming reliability. **Public multi-user hosting still requires independent review, capacity testing and operational controls**; see the limitations below.
+Share a local website or TCP service through a server you control. Version **1.2.1** includes client-specific keys, owner-bound host reservations and streaming reliability. **Public multi-user hosting still requires independent review, capacity testing and operational controls**; see the limitations below.
 
 ## เริ่มใช้งานด้วยแอป / Desktop quick start
 
@@ -114,7 +114,7 @@ Any supplied access key must contain 32–4096 visible ASCII characters without 
 | `WS_PORT`, `DASHBOARD_PORT`, `PROXY_PORT` | `8080`, `8081`, `8082` | Internal ports |
 | `PRIMARY_DOMAIN`, `TUNNEL_DOMAIN` | empty | First-boot admin and publish domains |
 | `TUNNEL_TOKEN` | generated on first boot | Legacy shared access key, unused unless shared-key compatibility is enabled |
-| `DASHBOARD_PASSWORD` | generated on first boot | Admin bootstrap password |
+| `DASHBOARD_PASSWORD` | generated on first boot | Admin bootstrap password; ignored (including validation) when current/legacy DB credentials exist |
 | `DATA_DIR` | `./data` | Private runtime files |
 | `AUTO_FIREWALL` | `false` | Optional legacy privileged firewall automation |
 | `TCP_BIND_HOST` | OS interfaces | Optional local interface IP for public TCP listeners |
@@ -227,4 +227,4 @@ For the next patch release, run `npm version patch --no-git-tag-version`, commit
 
 The workflow can also be run manually on `main`, or by pushing a matching `vX.Y.Z` tag. Failed uploads leave an unpublished draft; re-run the original failed workflow to finish it. Published versions are never overwritten, tags never move, and versions older than Latest cannot become a new release. Bump the version for further code changes after a release. Build/test jobs have read-only repository access; only the final publishing job can write release metadata and assets, using the built-in `GITHUB_TOKEN` rather than an extra personal token.
 
-See [release notes and preparation](deploy/RELEASE-1.2.0.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). Check the workflow result and Releases page to confirm publication; package metadata alone is not proof of a successful build.
+See [current release notes](deploy/RELEASE-1.2.1.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). Check the workflow result and Releases page to confirm publication; package metadata alone is not proof of a successful build.

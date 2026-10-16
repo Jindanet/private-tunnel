@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1 — 2026-10-16
+
+- Check current and legacy administrator credentials in the database before consulting `DASHBOARD_PASSWORD`. A stale, short or placeholder bootstrap value no longer blocks an existing installation or changes its password.
+- Validate supplied bootstrap passwords only when creating the first administrator credential. Close initialized database connections on failed startup and make concurrent initialization callers wait for completion.
+- Add restart regressions for saved hashes, legacy credential keys, invalid first-boot values and generated bootstrap credentials.
+
 ## 1.2.0 — 2026-10-16
 
 - Automatically test, build and publish new package versions pushed to main, including Windows desktop, Windows/Linux/macOS CLI assets and checksums; skip published versions and resume incomplete drafts safely.

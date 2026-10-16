@@ -1149,6 +1149,10 @@ async function ensureAdminPassword() {
   }
 
   if (ENV_DASHBOARD_PASSWORD) {
+    if (['your-password-here', 'change-me', 'admin', 'password'].includes(ENV_DASHBOARD_PASSWORD.toLowerCase())) {
+      throw new Error('Replace the example DASHBOARD_PASSWORD, or leave it empty to generate a private bootstrap password.');
+    }
+    validateNewPassword(ENV_DASHBOARD_PASSWORD);
     await setConfigValue(CONFIG_KEYS.adminPasswordHash, await hashPassword(ENV_DASHBOARD_PASSWORD));
     removeBootstrapPasswordFile();
     return;
@@ -1163,17 +1167,12 @@ async function initDatabase() {
   if (process.env.NODE_ENV === 'production' && DB_SYNC_TARGETS.some((backend) => backend !== DB_PROVIDER)) {
     throw new Error('Production requires one database backend. Clear DB_SYNC_TARGETS and use a separate backed-up migration process.');
   }
-  if (['your-password-here', 'change-me', 'admin', 'password'].includes(ENV_DASHBOARD_PASSWORD.toLowerCase())) {
-    throw new Error('Replace the example DASHBOARD_PASSWORD, or leave it empty to generate a private bootstrap password.');
-  }
-  if (ENV_DASHBOARD_PASSWORD) validateNewPassword(ENV_DASHBOARD_PASSWORD);
   if (ENV_TUNNEL_TOKEN) validateTunnelToken(ENV_TUNNEL_TOKEN);
-  if (primaryAdapter) {
-    return primaryAdapter;
-  }
-
   if (initPromise) {
     return initPromise;
+  }
+  if (primaryAdapter) {
+    return primaryAdapter;
   }
 
   initPromise = (async () => {
@@ -1187,8 +1186,8 @@ async function initDatabase() {
     }
 
     await bootstrapEmptyBackends();
-    await seedServerConfig();
     await ensureAdminPassword();
+    await seedServerConfig();
 
     console.log(`[DB] Primary backend: ${DB_PROVIDER}${activeAdapters.size > 1 ? ` | Mirrors: ${[...activeAdapters.keys()].filter((kind) => kind !== DB_PROVIDER).join(', ')}` : ''}`);
 
@@ -1211,9 +1210,14 @@ async function initDatabase() {
   try {
     return await initPromise;
   } catch (error) {
+    const failedAdapters = [...activeAdapters.values()];
     initPromise = null;
     primaryAdapter = null;
     activeAdapters = new Map();
+    await Promise.allSettled(failedAdapters.map(async (adapter) => {
+      if (adapter.db) adapter.db.close();
+      if (adapter.pool) await adapter.pool.end();
+    }));
     throw error;
   }
 }

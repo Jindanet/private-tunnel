@@ -46,12 +46,12 @@ function startupResult(directory, token, extraEnvironment = {}) {
     (async () => {
       let result;
       try {
-        await db.initDatabase();
+        await Promise.all([db.initDatabase(), db.initDatabase()]);
         const settings = await db.getServerSettings();
         result = {
           initialized: true,
           token: settings.tunnelToken,
-          passwordWorks: await db.verifyPassword(process.env.DASHBOARD_PASSWORD),
+          passwordWorks: await db.verifyPassword(process.env.VERIFY_TEST_PASSWORD || process.env.DASHBOARD_PASSWORD),
         };
       } catch (error) {
         let liveSettingsAvailable = false;
@@ -225,12 +225,81 @@ test('empty first-boot environment creates an independent valid random key', (t)
   assert.notEqual(generatedKeys[0], generatedKeys[1]);
 });
 
-test('a supplied weak bootstrap admin password fails before creating state', (t) => {
+test('a supplied weak bootstrap admin password cannot create credentials on first boot', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ptunnel-key-policy-'));
   t.after(() => removeTestDirectory(directory));
-  const dataDirectory = path.join(directory, 'invalid-password');
-  const result = startupResult(dataDirectory, '', {DASHBOARD_PASSWORD:'short'});
-  assert.equal(result.initialized, false);
-  assert.match(result.error, /at least 10/);
-  assert.equal(fs.existsSync(dataDirectory), false);
+  for (const [index, password] of ['short', 'admin', 'your-password-here', 'x'.repeat(1025)].entries()) {
+    const dataDirectory = path.join(directory, `invalid-password-${index}`);
+    const result = startupResult(dataDirectory, '', {DASHBOARD_PASSWORD:password});
+    assert.equal(result.initialized, false);
+    assert.match(result.error, /at least 10|example DASHBOARD_PASSWORD|1024 characters/);
+    assert.equal(result.liveSettingsAvailable, false);
+    assert.equal(fs.existsSync(path.join(dataDirectory, 'admin-bootstrap.txt')), false);
+    const databasePath = path.join(dataDirectory, 'test.db');
+    if (fs.existsSync(databasePath)) {
+      const inspector = new (require('better-sqlite3'))(databasePath, { readonly: true });
+      try { assert.equal(inspector.prepare('SELECT COUNT(*) AS count FROM config').get().count, 0); }
+      finally { inspector.close(); }
+    }
+  }
+});
+
+test('stored administrator credentials take precedence over stale bootstrap environment values', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ptunnel-key-policy-'));
+  t.after(() => removeTestDirectory(directory));
+  const token = crypto.randomBytes(32).toString('base64url');
+  assert.equal(startupResult(directory, token).initialized, true);
+  const Database = require('better-sqlite3');
+  function storedHash() {
+    const inspector = new Database(path.join(directory, 'test.db'), { readonly: true });
+    try { return inspector.prepare('SELECT value FROM config WHERE key=?').get('admin_password_hash').value; }
+    finally { inspector.close(); }
+  }
+  const originalHash = storedHash();
+  for (const password of ['short', 'admin', 'your-password-here', 'x'.repeat(1025), '', 'different-valid-bootstrap-password']) {
+    const result = startupResult(directory, token, { DASHBOARD_PASSWORD: password, VERIFY_TEST_PASSWORD: adminPassword });
+    assert.equal(result.initialized, true, 'An existing password must make the bootstrap value irrelevant');
+    assert.equal(result.passwordWorks, true, 'The original administrator password must keep working');
+    assert.equal(storedHash(), originalHash, 'Startup must never reset or replace the saved hash');
+    assert.equal(fs.existsSync(path.join(directory, 'admin-bootstrap.txt')), false);
+  }
+});
+
+test('an existing legacy database password key is migrated before consulting the environment', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ptunnel-key-policy-'));
+  t.after(() => removeTestDirectory(directory));
+  const token = crypto.randomBytes(32).toString('base64url');
+  assert.equal(startupResult(directory, token).initialized, true);
+  const Database = require('better-sqlite3');
+  let originalHash;
+  const inspector = new Database(path.join(directory, 'test.db'));
+  try {
+    originalHash = inspector.prepare('SELECT value FROM config WHERE key=?').get('admin_password_hash').value;
+    inspector.prepare('DELETE FROM config WHERE key=?').run('admin_password_hash');
+    inspector.prepare('INSERT OR REPLACE INTO config (key,value) VALUES (?,?)').run('dashboard_password', originalHash);
+  } finally { inspector.close(); }
+  const result = startupResult(directory, token, { DASHBOARD_PASSWORD: 'admin', VERIFY_TEST_PASSWORD: adminPassword });
+  assert.equal(result.initialized, true);
+  assert.equal(result.passwordWorks, true);
+  const after = new Database(path.join(directory, 'test.db'), { readonly: true });
+  try {
+    assert.equal(after.prepare('SELECT value FROM config WHERE key=?').get('admin_password_hash').value, originalHash);
+    assert.equal(after.prepare('SELECT value FROM config WHERE key=?').get('dashboard_password')?.value ?? '', '');
+  } finally { after.close(); }
+});
+
+test('an empty bootstrap password generates a private first-boot password that persists across restarts', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ptunnel-key-policy-'));
+  t.after(() => removeTestDirectory(directory));
+  const token = crypto.randomBytes(32).toString('base64url');
+  assert.equal(startupResult(directory, token, { DASHBOARD_PASSWORD: '' }).initialized, true);
+  const file = path.join(directory, 'admin-bootstrap.txt');
+  const content = fs.readFileSync(file, 'utf8');
+  const password = content.split(/\r?\n/)[2];
+  assert.ok(password.length >= 10);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const restarted = startupResult(directory, token, { DASHBOARD_PASSWORD: '', VERIFY_TEST_PASSWORD: password });
+  assert.equal(restarted.initialized, true);
+  assert.equal(restarted.passwordWorks, true);
+  assert.equal(fs.readFileSync(file, 'utf8'), content);
 });
