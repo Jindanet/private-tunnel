@@ -150,7 +150,17 @@ Back up `.env`, the database(s), data directory and client profiles before upgra
 - Re-generate Nginx snippets and review every publish host. The exact admin host and wildcard publish hosts must use separate TLS blocks.
 - Legacy password hashes migrate to salted scrypt after a successful login. Change the admin password afterward and protect database backups.
 
-Protocol version 1 is declared in the shared protocol and current clients identify it during setup. Explicitly incompatible versions are rejected. Legacy clients without a version remain accepted for migration; this is not a general protocol negotiation system.
+The application control protocol remains version 1 in `shared/protocol.js`. Explicitly incompatible control versions are rejected; legacy clients without a version remain accepted for migration.
+
+### HTTP/TCP data transport v4
+
+Current desktop and CLI clients use `shared/tunnel-v4.js`. During tunnel setup they advertise `dataTransportVersions: [4, 1]`; an updated server selects `dataTransportVersion: 4` in its assignment. An older server that omits the selection uses the original v1 transport, and older clients continue to work with an updated server. The base `shared/protocol.js` is preserved unchanged. The supplied v2/v3/game-pipe prototypes informed the design; the running application imports the new v4 implementation.
+
+V4 retains the existing JSON controls and UUID stream identities. Data is split into frames of at most 32 KiB, scheduled fairly across streams, and sent under both a 128 KiB per-stream credit window and a 1 MiB connection window. Credit accounts for payload plus a fixed 256-unit charge per frame to bound tiny-frame metadata too. Receivers return credit after the destination's write callback completes. A slow local service pauses the corresponding producer; send queues also have 512 KiB / 1,024 chunks per stream and 4 MiB / 8,192 chunks per connection hard limits. These bounds reduce application buffering; they are not a process-wide memory budget or a throughput guarantee.
+
+End-of-stream controls wait behind queued data. Modern TCP connections preserve independent EOF directions, allowing a service to reply after the visitor has finished sending. Aborts discard queued bytes and release resources. TCP sockets enable no-delay and keepalive. V4 does not add UDP, compression, new authentication, application WebSocket passthrough or horizontal scaling; authentication remains at the existing WebSocket upgrade boundary. HTTP requests retain the 30-second timeout.
+
+The internal `TunnelClient` option `dataTransportVersions: [1]` forces legacy transport for compatibility testing. Desktop users do not need to choose a protocol. Rebuild both server/client code and the desktop package to use the new implementation; already-built binaries do not change when source files are edited.
 
 ## Security and current limitations
 

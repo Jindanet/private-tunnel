@@ -2,7 +2,8 @@ const net = require('node:net');
 const { validateHeaderName, validateHeaderValue } = require('node:http');
 const crypto = require('node:crypto');
 const { redactLogUrl } = require('./security');
-const { MSG, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, PROTOCOL_VERSION, decodeDataFrame, sendControl, sendData, writeBounded } = require('../shared/protocol');
+const { MSG, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, PROTOCOL_VERSION, DATA_TRANSPORT_VERSION, TCP_END,
+  selectTransport, getTransportVersion, receiveControl, decodeDataFrame, sendControl, sendData, writeFrame, discardFrame, cancelStream } = require('../shared/tunnel-v4');
 const { generate, RESERVED } = require('./subdomain');
 const { getClientMapping, getClientMappingByAssignedHost, isSubdomainTaken, saveMapping, touchClient, logRequest } = require('./db');
 const { openPort, closePort } = require('./firewall');
@@ -47,8 +48,12 @@ class TunnelManager {
       let msg;
       try {
         if (isBinary) {
+          const frame = decodeDataFrame(data, ws);
+          if (!frame) return;
           if (this.tunnels.get(assignedTunnelKey)?.ws === ws) {
-            this._handleBinaryFrame(data, assignedTunnelKey);
+            this._handleBinaryFrame(null, assignedTunnelKey, frame);
+          } else {
+            discardFrame(ws, frame);
           }
           return;
         }
@@ -77,11 +82,13 @@ class TunnelManager {
         }
         opening = true;
       }
-      // Only tunnel creation is bounded; responses for existing streams remain immediate.
-      Promise.resolve().then(() => {
-        if (closed || ws.readyState !== ws.OPEN) return;
-        return this._handleControlMessage(ws, msg, assignedTunnelKey, clientIp, setTunnelKey);
-      }).catch((error) => {
+      // Invoke stream controls now: a following binary message must not overtake its headers/FIN.
+      let operation;
+      try {
+        if (!receiveControl(ws, msg)) return;
+        operation = this._handleControlMessage(ws, msg, assignedTunnelKey, clientIp, setTunnelKey);
+      } catch (error) { operation = Promise.reject(error); }
+      Promise.resolve(operation).catch((error) => {
         if (isOpening) removeAssignedTunnel();
         reportError(error);
       }).finally(() => {
@@ -124,6 +131,19 @@ class TunnelManager {
           sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'Unsupported tunnel protocol version.' });
           return;
         }
+        if (Object.prototype.hasOwnProperty.call(msg, 'dataTransportVersions')
+          && (!Array.isArray(msg.dataTransportVersions) || msg.dataTransportVersions.length > 8
+            || msg.dataTransportVersions.some((value) => !Number.isSafeInteger(value) || value < 1))) {
+          sendControl(ws, {type: MSG.TUNNEL_ERROR, message: 'Invalid data transport capabilities.'});
+          return;
+        }
+        const selectedVersion = msg.dataTransportVersions?.includes(DATA_TRANSPORT_VERSION) ? DATA_TRANSPORT_VERSION : 1;
+        if ((currentTunnelKey || getTransportVersion(ws) === DATA_TRANSPORT_VERSION)
+          && selectedVersion !== getTransportVersion(ws)) {
+          sendControl(ws, {type: MSG.TUNNEL_ERROR, message: 'Reconnect to change the data transport.'});
+          return;
+        }
+        if (selectedVersion === DATA_TRANSPORT_VERSION) selectTransport(ws, selectedVersion, {isServer: true});
         if (currentTunnelKey) {
           this._removeTunnel(currentTunnelKey);
           setTunnelKey(null);
@@ -167,8 +187,16 @@ class TunnelManager {
 
         const sock = tunnel.tcpConnections.get(msg.connId);
         if (sock) {
+          sock._tunnelRemoteReset = true;
           sock.destroy();
           tunnel.tcpConnections.delete(msg.connId);
+        }
+        break;
+      }
+
+      case TCP_END: {
+        if (getTransportVersion(ws) === DATA_TRANSPORT_VERSION) {
+          this.tunnels.get(currentTunnelKey)?.tcpConnections?.get(msg.connId)?.end();
         }
         break;
       }
@@ -313,8 +341,9 @@ class TunnelManager {
       return;
     }
 
-    sendControl(ws, {
+    const assigned = sendControl(ws, {
       type: MSG.TUNNEL_ASSIGNED,
+      dataTransportVersion: tunnel.dataTransportVersion,
       tunnelType: 'http',
       subdomain: assignment.label,
       publicHost: assignment.publicHost,
@@ -322,6 +351,8 @@ class TunnelManager {
       publishMode: assignment.publishMode,
       url: tunnel.publicUrl,
     });
+    if (!assigned) { this._removeTunnel(tunnelKey, tunnel); setTunnelKey(null); return; }
+    tunnel.ready = true;
     console.log(`[TunnelManager] HTTP tunnel: ${assignment.publicHost} -> localhost:${msg.localPort} from ${clientIp}${msg.clientId ? ' (client: ' + msg.clientId.slice(0, 8) + '...)' : ''}`);
   }
 
@@ -389,8 +420,9 @@ class TunnelManager {
       return;
     }
 
-    sendControl(ws, {
+    const assigned = sendControl(ws, {
       type: MSG.TUNNEL_ASSIGNED,
+      dataTransportVersion: tunnel.dataTransportVersion,
       tunnelType: 'tcp',
       subdomain: label,
       publicHost: normalizeDomain(domainChoice.domain),
@@ -398,12 +430,16 @@ class TunnelManager {
       url: tunnel.publicUrl,
       tcpPort,
     });
+    if (!assigned) { this._removeTunnel(tunnelKey, tunnel); setTunnelKey(null); return; }
+    tunnel.ready = true;
     console.log(`[TunnelManager] TCP tunnel: ${domainChoice.domain}:${tcpPort} -> localhost:${msg.localPort} from ${clientIp}`);
   }
 
   _createBaseTunnel(ws, msg, clientIp, clientRecord, details) {
     return {
       ws,
+      dataTransportVersion: getTransportVersion(ws),
+      ready: false,
       tunnelKey: details.tunnelKey,
       tunnelType: msg.tunnelType === 'tcp' ? 'tcp' : 'http',
       localPort: msg.localPort,
@@ -761,19 +797,19 @@ class TunnelManager {
     });
   }
 
-  _handleBinaryFrame(data, tunnelKey) {
+  _handleBinaryFrame(data, tunnelKey, decodedFrame) {
     if (!tunnelKey) return;
     const tunnel = this.tunnels.get(tunnelKey);
     if (!tunnel) return;
 
-    const frame = decodeDataFrame(data);
+    const frame = decodedFrame || decodeDataFrame(data, tunnel.ws);
     if (!frame) return;
 
     if (frame.frameType === FRAME_RESPONSE_BODY) {
       const pending = tunnel.pendingRequests.get(frame.requestId);
       if (pending && !pending.res.destroyed) {
         try {
-          if (writeBounded(pending.res, frame.data)) {
+          if (writeFrame(tunnel.ws, frame, pending.res)) {
             tunnel.stats.bytesOut += frame.data.length;
           } else {
             this._failPendingResponse(tunnel, frame.requestId, 'Response buffer limit exceeded');
@@ -781,16 +817,23 @@ class TunnelManager {
         } catch {
           this._failPendingResponse(tunnel, frame.requestId, 'Could not write response body');
         }
+      } else {
+        discardFrame(tunnel.ws, frame);
       }
     } else if (frame.frameType === FRAME_TCP_DATA) {
       const sock = tunnel.tcpConnections && tunnel.tcpConnections.get(frame.requestId);
       if (sock && !sock.destroyed) {
         try {
-          if (writeBounded(sock, frame.data)) tunnel.stats.bytesOut += frame.data.length;
+          if (writeFrame(tunnel.ws, frame, sock)) tunnel.stats.bytesOut += frame.data.length;
+          else sock.destroy();
         } catch {
           sock.destroy();
         }
+      } else {
+        discardFrame(tunnel.ws, frame);
       }
+    } else {
+      discardFrame(tunnel.ws, frame);
     }
   }
 
@@ -817,8 +860,10 @@ class TunnelManager {
   }
 
   _startTcpServer(ws, tunnel) {
-    const server = net.createServer((sock) => {
-      if (ws.readyState !== ws.OPEN || this.tunnels.get(tunnel.tunnelKey) !== tunnel || tunnel.tcpConnections.size >= 128) {
+    const modern = getTransportVersion(ws) === DATA_TRANSPORT_VERSION;
+    const server = net.createServer({allowHalfOpen: modern}, (sock) => {
+      if (ws.readyState !== ws.OPEN || this.tunnels.get(tunnel.tunnelKey) !== tunnel
+        || (modern && !tunnel.ready) || tunnel.tcpConnections.size >= 128) {
         sock.destroy();
         return;
       }
@@ -826,19 +871,30 @@ class TunnelManager {
       tunnel.tcpConnections.set(connId, sock);
       tunnel.stats.connections++;
       sock.setTimeout(5 * 60 * 1000, () => sock.destroy());
+      sock.setNoDelay?.(true);
+      sock.setKeepAlive?.(true, 30000);
 
-      sendControl(ws, { type: MSG.TCP_CONNECT, connId });
+      if (!sendControl(ws, { type: MSG.TCP_CONNECT, connId })) {
+        tunnel.tcpConnections.delete(connId);
+        sock.destroy();
+        return;
+      }
 
       sock.on('data', (chunk) => {
         tunnel.stats.bytesIn += chunk.length;
         if (ws.readyState === ws.OPEN) {
-          sendData(ws, FRAME_TCP_DATA, connId, chunk);
+          if (!sendData(ws, FRAME_TCP_DATA, connId, chunk, sock)) sock.destroy();
         }
       });
 
-      sock.on('close', () => {
+      sock.on('end', () => {
+        if (modern) sendControl(ws, {type: TCP_END, connId});
+      });
+
+      sock.on('close', (hadError) => {
         tunnel.tcpConnections.delete(connId);
-        if (ws.readyState === ws.OPEN) {
+        if (!sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished)
+          && ws.readyState === ws.OPEN) {
           sendControl(ws, { type: MSG.TCP_CLOSE, connId });
         }
       });
@@ -923,7 +979,8 @@ class TunnelManager {
       this.httpHosts.delete(normalizeDomain(tunnel.publicHost));
     }
 
-    for (const [, pending] of tunnel.pendingRequests) {
+    for (const [requestId, pending] of tunnel.pendingRequests) {
+      cancelStream(tunnel.ws, requestId);
       clearTimeout(pending.timeout);
       try {
         if (!pending.res.destroyed) {
@@ -944,7 +1001,8 @@ class TunnelManager {
     }
 
     if (tunnel.tcpConnections) {
-      for (const [, sock] of tunnel.tcpConnections) {
+      for (const [connId, sock] of tunnel.tcpConnections) {
+        cancelStream(tunnel.ws, connId);
         try { sock.destroy(); } catch {}
       }
       tunnel.tcpConnections.clear();

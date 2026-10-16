@@ -16,6 +16,8 @@ This version is prepared in source. A remote tag, public release and signed bina
 
 ### Security and reliability
 
+- Negotiate data transport v4 for HTTP/TCP while preserving the v1 base protocol and legacy peers. Add per-stream/connection receive credit, bounded fair send queues, producer pause/resume, ordered EOF and TCP half-close handling. Supplied v2/v3/game helpers remain inactive reference prototypes.
+
 - Default internal listeners bind to loopback; automatic privileged firewall changes are disabled by default.
 - Empty first-boot client keys generate a random key; network authentication fails closed by default. Current clients send the key in an Authorization header. Legacy query-token support is explicitly opt-in.
 - Supplied access keys require 32–4096 visible ASCII characters without whitespace and reject recognizable placeholder prefixes (case insensitive). Invalid nonempty environment keys stop startup. Legacy invalid stored keys keep administrator sign-in available but deny tunnel authentication until rotation; Settings requires replacing them before saving. Empty first boot generates a random 32-byte key; key length alone does not establish entropy.

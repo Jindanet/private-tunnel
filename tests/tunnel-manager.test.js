@@ -37,7 +37,8 @@ function fixture({ db: overrides = {}, autoListen = true, assignedPorts = [] } =
     ...overrides,
   };
   const net = {
-    createServer(onConnection) {
+    createServer(options, onConnection) {
+      if (typeof options === 'function') onConnection = options;
       const server = new EventEmitter();
       server.closed = false;
       server.bound = false;
@@ -199,6 +200,59 @@ test('optional protocol negotiation accepts legacy and current clients while a m
   assert.notEqual([...manager.tunnels.values()][0], active);
   assert.equal(ws.messages.filter((message) => message.type === MSG.TUNNEL_ASSIGNED).length, 2);
   ws.close();
+});
+
+test('v4 negotiation is explicit, idempotent and cannot downgrade an active WebSocket', async () => {
+  const { manager } = fixture();
+  const ws = socket();
+  manager.handleNewClient(ws, '127.0.0.1');
+  ws.control({type:MSG.TUNNEL_OPEN,protocolVersion:1,dataTransportVersions:[4,1]});
+  await flush();
+  const active = [...manager.tunnels.values()][0];
+  assert.equal(active.dataTransportVersion,4);
+  assert.equal(active.ready,true);
+  assert.equal(ws.messages.at(-1).dataTransportVersion,4);
+  for (const capabilities of [[1], '4', [4.5]]) {
+    ws.control({type:MSG.TUNNEL_OPEN,protocolVersion:1,dataTransportVersions:capabilities});
+    await flush();
+    assert.equal(manager.tunnels.get(active.tunnelKey),active);
+    assert.equal(ws.messages.at(-1).type,MSG.TUNNEL_ERROR);
+  }
+  ws.control({type:MSG.TUNNEL_OPEN,protocolVersion:1,dataTransportVersions:[4]});
+  await flush();
+  assert.equal(ws.messages.at(-1).dataTransportVersion,4);
+  assert.equal(ws.readyState,ws.OPEN);
+  ws.close();
+});
+
+test('modern publication waits for assignment while response headers retain wire order', async () => {
+  const save = deferred();
+  const { manager } = fixture({db:{saveMapping:()=>save.promise}});
+  const ws = socket();
+  manager.handleNewClient(ws,'127.0.0.1');
+  ws.control({type:MSG.TUNNEL_OPEN,clientId:'saved-profile',dataTransportVersions:[4]});
+  await flush();
+  const tunnel=[...manager.tunnels.values()][0];
+  const res=response();
+  require('../server/proxy').handleProxy({headers:{}},res,tunnel.publicHost,manager);
+  assert.equal(res.statusCode,503);
+  save.resolve();await flush();
+  assert.equal(tunnel.ready,true);
+  ws.close();
+
+  const legacy=socket();
+  manager.handleNewClient(legacy,'127.0.0.2');
+  legacy.control({type:MSG.TUNNEL_OPEN});await flush();
+  const active=[...manager.tunnels.values()][0];
+  const pending=pendingResponse(active);
+  pending.res.write=(chunk)=>{
+    assert.equal(pending.res.headersSent,true,'headers must be processed before the next binary WS message');
+    pending.res.chunks.push(chunk);
+  };
+  legacy.control({type:MSG.RESPONSE_START,requestId,statusCode:200,headers:{}});
+  legacy.emit('message',encodeDataFrame(FRAME_RESPONSE_BODY,requestId,Buffer.from('ordered')),true);
+  assert.deepEqual(pending.res.chunks,[Buffer.from('ordered')]);
+  legacy.close();
 });
 
 test('closing while client lookup or host lookup is pending cannot register a tunnel', async () => {
@@ -475,6 +529,7 @@ test('null, primitive, array and invalid binary messages cannot escape the socke
   await flush();
   manager._handleBinaryFrame = () => { throw new Error('Invalid binary frame'); };
   assert.doesNotThrow(() => ws.emit('message', Buffer.alloc(17), true));
+  assert.doesNotThrow(() => ws.emit('message', encodeDataFrame(FRAME_RESPONSE_BODY, requestId, Buffer.from('data')), true));
   await flush();
   assert.equal(ws.messages.filter((msg) => msg.type === MSG.TUNNEL_ERROR).length, 6);
   ws.close();
@@ -582,4 +637,20 @@ test('TCP listeners cap accepted connections and terminate idle sockets after fi
   ws.close();
   assert.equal(tunnel.tcpConnections.size, 0);
   assert.equal(manager.tunnels.size, 0);
+});
+
+test('a TCP visitor is released immediately when its connect control cannot be sent', async () => {
+  const {manager,servers}=fixture();
+  const ws=socket();
+  const tunnel=activeTunnel(manager,ws,{tcp:true});
+  await manager._startTcpServer(ws,tunnel);
+  const visitor=new EventEmitter();
+  visitor.setTimeout=()=>{};
+  visitor.destroy=()=>{visitor.destroyed=true;};
+  ws.send=()=>{throw new Error('Send failed');};
+  assert.doesNotThrow(()=>servers[0].emit('connection',visitor));
+  assert.equal(visitor.destroyed,true);
+  assert.equal(tunnel.tcpConnections.size,0);
+  manager._removeTunnel(tunnel.tunnelKey);
+  ws.close();
 });

@@ -58,6 +58,7 @@
       "client/local-forwarder.js",
       "client/server-url.js",
       "shared/protocol.js",
+      "shared/tunnel-v4.js",
       "node_modules/**/*",
       "package.json"
     ],

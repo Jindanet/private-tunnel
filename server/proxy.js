@@ -1,4 +1,4 @@
-const { MSG, FRAME_REQUEST_BODY, generateRequestId, sendControl, sendData } = require('../shared/protocol');
+const { MSG, FRAME_REQUEST_BODY, DATA_TRANSPORT_VERSION, generateRequestId, sendControl, sendData } = require('../shared/tunnel-v4');
 const { normalizeDomain } = require('./routing');
 const { clientIp } = require('./security');
 
@@ -17,6 +17,11 @@ function handleProxy(req, res, publicHost, tunnelManager) {
   if (tunnel.ws.readyState !== tunnel.ws.OPEN) {
     res.writeHead(502, { 'Content-Type': 'text/plain' });
     res.end('Tunnel client disconnected');
+    return;
+  }
+  if (tunnel.dataTransportVersion === DATA_TRANSPORT_VERSION && !tunnel.ready) {
+    res.writeHead(503, {'Content-Type': 'text/plain', 'Retry-After': '1'});
+    res.end('Tunnel setup is still completing');
     return;
   }
   if (tunnel.pendingRequests.size >= 128) {
@@ -61,25 +66,33 @@ function handleProxy(req, res, publicHost, tunnelManager) {
   // Track bytes in
   req.on('data', (chunk) => {
     tunnel.stats.bytesIn += chunk.length;
-    sendData(tunnel.ws, FRAME_REQUEST_BODY, requestId, chunk);
+    if (!sendData(tunnel.ws, FRAME_REQUEST_BODY, requestId, chunk, req)) {
+      tunnelManager._failPendingResponse(tunnel, requestId, 'Request queue limit exceeded');
+      req.resume();
+    }
   });
 
   // Forward request headers to client
   const headers = { ...req.headers };
-  sendControl(tunnel.ws, {
+  const started = sendControl(tunnel.ws, {
     type: MSG.REQUEST_START,
     requestId,
     method: req.method,
     path: req.url,
     headers,
   });
+  if (!started) {
+    tunnelManager._failPendingResponse(tunnel, requestId, 'Could not forward request headers');
+    req.resume();
+    return;
+  }
 
   req.on('end', () => {
     sendControl(tunnel.ws, { type: MSG.STREAM_END, requestId, direction: 'request' });
   });
 
   req.on('error', (err) => {
-    sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message: err.message });
+    tunnelManager._failPendingResponse(tunnel, requestId, err.message);
   });
 
   req.on('aborted', () => {

@@ -1,7 +1,8 @@
 const WebSocket = require('ws');
 const net = require('node:net');
 const os = require('node:os');
-const { MSG, PROTOCOL_VERSION, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, decodeDataFrame, sendControl, sendData, writeBounded } = require('../shared/protocol');
+const { MSG, PROTOCOL_VERSION, DATA_TRANSPORT_VERSION, TCP_END, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA,
+  selectTransport, getTransportVersion, receiveControl, decodeDataFrame, sendControl, sendData, writeFrame, discardFrame, cancelStream } = require('../shared/tunnel-v4');
 const { createForwardRequest } = require('./local-forwarder');
 const { normalizeServerWebSocketUrl } = require('./server-url');
 
@@ -16,6 +17,11 @@ class TunnelClient {
     this.publishDomain = options.publishDomain || '';
     this.publishMode = options.publishMode === 'root' ? 'root' : 'subdomain';
     this.desiredSubdomain = String(options.desiredSubdomain || '').trim().toLowerCase();
+    this.dataTransportVersions = Array.isArray(options.dataTransportVersions)
+      ? options.dataTransportVersions.filter((value) => value === 1 || value === DATA_TRANSPORT_VERSION)
+      : [DATA_TRANSPORT_VERSION, 1];
+    this.dataTransportVersion = 1;
+    this.dataTransportSelected = false;
     this.ws = null;
     this.subdomain = null;
     this.url = null;
@@ -38,15 +44,20 @@ class TunnelClient {
   }
 
   connect() {
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) return;
     const url = new URL(this.serverUrl);
     url.searchParams.delete('token');
-    this.ws = new WebSocket(url, {
+    this.dataTransportVersion = 1;
+    this.dataTransportSelected = false;
+    const ws = this.ws = new WebSocket(url, {
       headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
       handshakeTimeout: 10000,
       maxPayload: 1024 * 1024,
+      perMessageDeflate: false,
     });
 
     this.ws.on('open', () => {
+      if (this.ws !== ws) return;
       this.connected = true;
       this.reconnectAttempts = 0;
 
@@ -54,6 +65,7 @@ class TunnelClient {
       sendControl(this.ws, {
         type: MSG.TUNNEL_OPEN,
         protocolVersion: PROTOCOL_VERSION,
+        dataTransportVersions: this.dataTransportVersions,
         tunnelType: this.tunnelType,
         localPort: this.localPort,
         clientId: this.clientId,
@@ -66,6 +78,7 @@ class TunnelClient {
     });
 
     this.ws.on('message', (data, isBinary) => {
+      if (this.ws !== ws || ws.readyState !== ws.OPEN) return;
       if (isBinary) {
         this._handleBinaryFrame(data);
       } else {
@@ -79,6 +92,7 @@ class TunnelClient {
     });
 
     this.ws.on('close', (code) => {
+      if (this.ws !== ws) return;
       this.connected = false;
       this._clearRequestStreams(new Error('Tunnel WebSocket closed'));
       this._clearTcpSockets();
@@ -95,6 +109,7 @@ class TunnelClient {
     });
 
     this.ws.on('error', (err) => {
+      if (this.ws !== ws) return;
       if (err.message && /Unexpected server response: 401/.test(err.message)) {
         this.shouldReconnect = false;
         err.code = 'EUNAUTHORIZED';
@@ -105,6 +120,20 @@ class TunnelClient {
 
   _handleControlMessage(msg) {
     if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
+    if (msg.type === MSG.TUNNEL_ASSIGNED) {
+      const version = msg.dataTransportVersion == null ? 1 : msg.dataTransportVersion;
+      if ((this.dataTransportSelected && version !== this.dataTransportVersion)
+        || (version !== 1 && (version !== DATA_TRANSPORT_VERSION || !this.dataTransportVersions.includes(version)))) {
+        this.shouldReconnect = false;
+        this.ws.close(1002, 'Unsupported data transport');
+        this.onError(new Error('Server selected an unsupported data transport.'));
+        return;
+      }
+      if (version === DATA_TRANSPORT_VERSION) selectTransport(this.ws, version, { isServer: false });
+      this.dataTransportVersion = version;
+      this.dataTransportSelected = true;
+    }
+    if (!receiveControl(this.ws, msg)) return;
     switch (msg.type) {
       case MSG.TUNNEL_ASSIGNED:
         this.subdomain = msg.subdomain;
@@ -116,6 +145,7 @@ class TunnelClient {
           publishMode: msg.publishMode || this.publishMode,
           url: msg.url,
           tunnelType: msg.tunnelType,
+          dataTransportVersion: this.dataTransportVersion,
         });
         break;
 
@@ -133,6 +163,10 @@ class TunnelClient {
 
       case MSG.TCP_CLOSE:
         this._handleTcpClose(msg.connId);
+        break;
+
+      case TCP_END:
+        if (getTransportVersion(this.ws) === DATA_TRANSPORT_VERSION) this.tcpSockets.get(msg.connId)?.end();
         break;
 
       case MSG.REQUEST_START:
@@ -156,39 +190,56 @@ class TunnelClient {
   }
 
   _handleBinaryFrame(data) {
-    const frame = decodeDataFrame(data);
+    const frame = decodeDataFrame(data, this.ws);
     if (!frame) return;
 
     if (frame.frameType === FRAME_REQUEST_BODY) {
       const stream = this.requestStreams.get(frame.requestId);
       if (stream && stream.localReq && !stream.localReq.destroyed) {
-        writeBounded(stream.localReq, frame.data);
+        if (!writeFrame(this.ws, frame, stream.localReq)) {
+          sendControl(this.ws, {type: MSG.STREAM_ERROR, requestId: frame.requestId, message: 'Local request write failed'});
+          this._abortRequestStream(frame.requestId, 'Local request write failed');
+        }
+      } else {
+        discardFrame(this.ws, frame);
       }
     } else if (frame.frameType === FRAME_TCP_DATA) {
       const sock = this.tcpSockets.get(frame.requestId);
       if (sock && !sock.destroyed) {
-        writeBounded(sock, frame.data);
+        if (!writeFrame(this.ws, frame, sock)) sock.destroy();
+      } else {
+        discardFrame(this.ws, frame);
       }
+    } else {
+      discardFrame(this.ws, frame);
     }
   }
 
   _handleTcpConnect(connId) {
     if (typeof connId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(connId)) return;
     if (this.tcpSockets.has(connId) || this.tcpSockets.size >= 128) return;
-    const sock = net.createConnection({ host: this.localHost, port: this.localPort });
+    const modern = getTransportVersion(this.ws) === DATA_TRANSPORT_VERSION;
+    const sock = net.createConnection({ host: this.localHost, port: this.localPort, allowHalfOpen: modern });
+    sock.setNoDelay(true);
+    sock.setKeepAlive(true, 30000);
     sock.setTimeout(300000, () => sock.destroy());
     this.tcpSockets.set(connId, sock);
     this.onRequest({ method: 'TCP', path: `→ localhost:${this.localPort}`, statusCode: 0, latency: 0 });
 
     sock.on('data', (chunk) => {
       if (this.ws && this.ws.readyState === this.ws.OPEN) {
-        sendData(this.ws, FRAME_TCP_DATA, connId, chunk);
+        if (!sendData(this.ws, FRAME_TCP_DATA, connId, chunk, sock)) sock.destroy();
       }
     });
 
-    sock.on('close', () => {
+    sock.on('end', () => {
+      if (modern) sendControl(this.ws, {type: TCP_END, connId});
+    });
+
+    sock.on('close', (hadError) => {
       this.tcpSockets.delete(connId);
-      if (this.ws && this.ws.readyState === this.ws.OPEN) {
+      if (!sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished)
+        && this.ws && this.ws.readyState === this.ws.OPEN) {
         sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
       }
     });
@@ -197,17 +248,14 @@ class TunnelClient {
       this.onRequest({ method: 'TCP', path: `connected → localhost:${this.localPort}`, statusCode: 200, latency: 0 });
     });
 
-    sock.on('error', (err) => {
-      this.tcpSockets.delete(connId);
-      if (this.ws && this.ws.readyState === this.ws.OPEN) {
-        sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
-      }
-    });
+    sock.on('error', () => {}); // close performs the stream reset once.
   }
 
   _handleTcpClose(connId) {
+    cancelStream(this.ws, connId);
     const sock = this.tcpSockets.get(connId);
     if (sock) {
+      sock._tunnelRemoteReset = true;
       sock.destroy();
       this.tcpSockets.delete(connId);
     }
@@ -265,16 +313,23 @@ class TunnelClient {
         return;
       }
 
-      sendControl(this.ws, {
+      const headersSent = sendControl(this.ws, {
         type: MSG.RESPONSE_START,
         requestId: stream.requestId,
         statusCode: result.statusCode,
         headers: result.headers,
       });
+      if (!headersSent) {
+        this._reportRequest(stream, 502, 'Could not forward response headers');
+        this._abortRequestStream(stream.requestId, 'Could not forward response headers');
+        return;
+      }
 
       result.bodyStream.on('data', (chunk) => {
         if (this.ws && this.ws.readyState === this.ws.OPEN) {
-          sendData(this.ws, FRAME_RESPONSE_BODY, stream.requestId, chunk);
+          if (!sendData(this.ws, FRAME_RESPONSE_BODY, stream.requestId, chunk, result.bodyStream)) {
+            result.bodyStream.destroy(new Error('Tunnel response queue limit exceeded'));
+          }
         }
       });
 
@@ -325,6 +380,7 @@ class TunnelClient {
   }
 
   _abortRequestStream(requestId, message) {
+    cancelStream(this.ws, requestId);
     const stream = this.requestStreams.get(requestId);
     if (!stream) return;
 
@@ -345,7 +401,8 @@ class TunnelClient {
   }
 
   _clearTcpSockets() {
-    for (const [, sock] of this.tcpSockets) {
+    for (const [connId, sock] of this.tcpSockets) {
+      cancelStream(this.ws, connId);
       sock.destroy();
     }
     this.tcpSockets.clear();
