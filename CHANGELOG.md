@@ -2,6 +2,8 @@
 
 ## 1.2.0 — 2026-10-16
 
+- Automatically test, build and publish new package versions pushed to main, including Windows desktop, Windows/Linux/macOS CLI assets and checksums; skip published versions and resume incomplete drafts safely.
+
 - Issue, rotate and revoke client-specific keys from the Thai/English administrator UI. Store only key digests, bind saved host ownership to the authenticated key owner, and disable shared-key authentication by default.
 - Use per-request HTTP inactivity instead of a total 30-second lifetime; abort incomplete responses after headers without appending error text. Require v4 receive-credit transport by default, retaining explicit legacy migration opt-in.
 - Enforce heartbeat replies, add cancelable reconnect jitter, require TLS for remote client connections, and add TCP interface/visitor IP-CIDR controls while keeping OS-selected ports.

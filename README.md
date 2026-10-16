@@ -190,7 +190,7 @@ This release improves several boundaries; it does not make an untrusted public h
 - **Capacity and availability:** bounded buffers, connection limits and timeouts reduce obvious resource abuse. Per-user bandwidth quotas, public abuse handling, HA, horizontal scaling and Prometheus metrics are not implemented. Tunnel/session state is local to one process. Reconnect cannot resume an interrupted TCP stream.
 - **Administration:** one administrator password, no accounts/RBAC, MFA or durable security audit trail. Liveness is not an end-to-end availability guarantee.
 - **Authentication limits:** a pre-authentication per-IP limit of 60 WebSocket upgrade attempts per minute covers both tunnel routes and administrator live updates, independently of HTTP administrator-login throttling. Shared proxy addresses can therefore share an allowance.
-- **Release trust:** desktop signing, notarization and automatic updates are not configured. The artifact workflow prepares unsigned Windows files and source archives; it does not publish a GitHub Release.
+- **Release trust:** desktop signing, notarization and in-app automatic updates are not configured. GitHub Actions builds and publishes versioned releases automatically; Windows desktop archives remain unsigned.
 
 ### Vulnerability reports
 
@@ -219,4 +219,12 @@ Build on the corresponding operating system. Windows output is `dist-app/win-unp
 
 CLI build commands are `npm run build:win`, `npm run build:linux` and `npm run build:macos`. Desktop native module packaging and signing need validation on each target platform before a public release.
 
-See [release notes and preparation](deploy/RELEASE-1.2.0.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). The version and workflows in this checkout do not imply that a remote tag or release has been published.
+### Automatic releases
+
+Push `main` with a new stable `package.json`/lockfile version and **Build and publish release** runs automatically. It tests on Linux and Windows, audits production dependencies, builds the Windows desktop ZIP and CLI binaries for Windows/Linux/macOS (Intel and Apple Silicon), and smoke-tests each CLI on its native runner. Only after all jobs succeed does it create `vX.Y.Z`, upload all six assets plus SHA-256 checksums, and publish the GitHub Release as Latest. No manual GitHub upload or tag is needed.
+
+For the next patch release, run `npm version patch --no-git-tag-version`, commit the updated package files with your changes, and push `main`. Minor/major updates can use `npm version minor`/`major` with the same flag. A push without a version change skips rebuilding an already-published release. Release notes use `deploy/RELEASE-X.Y.Z.md` if present, otherwise GitHub generates them automatically.
+
+The workflow can also be run manually on `main`, or by pushing a matching `vX.Y.Z` tag. Failed uploads leave an unpublished draft; re-run the original failed workflow to finish it. Published versions are never overwritten, tags never move, and versions older than Latest cannot become a new release. Bump the version for further code changes after a release. Build/test jobs have read-only repository access; only the final publishing job can write release metadata and assets, using the built-in `GITHUB_TOKEN` rather than an extra personal token.
+
+See [release notes and preparation](deploy/RELEASE-1.2.0.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). Check the workflow result and Releases page to confirm publication; package metadata alone is not proof of a successful build.
