@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 const net = require('node:net');
 const os = require('node:os');
-const { MSG, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, decodeDataFrame, sendControl, sendData } = require('../shared/protocol');
+const { MSG, PROTOCOL_VERSION, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, decodeDataFrame, sendControl, sendData, writeBounded } = require('../shared/protocol');
 const { createForwardRequest } = require('./local-forwarder');
 const { normalizeServerWebSocketUrl } = require('./server-url');
 
@@ -38,12 +38,13 @@ class TunnelClient {
   }
 
   connect() {
-    let url = this.serverUrl;
-    if (this.token) {
-      const sep = url.includes('?') ? '&' : '?';
-      url = `${url}${sep}token=${encodeURIComponent(this.token)}`;
-    }
-    this.ws = new WebSocket(url);
+    const url = new URL(this.serverUrl);
+    url.searchParams.delete('token');
+    this.ws = new WebSocket(url, {
+      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      handshakeTimeout: 10000,
+      maxPayload: 1024 * 1024,
+    });
 
     this.ws.on('open', () => {
       this.connected = true;
@@ -52,6 +53,7 @@ class TunnelClient {
       // Request a tunnel
       sendControl(this.ws, {
         type: MSG.TUNNEL_OPEN,
+        protocolVersion: PROTOCOL_VERSION,
         tunnelType: this.tunnelType,
         localPort: this.localPort,
         clientId: this.clientId,
@@ -93,11 +95,16 @@ class TunnelClient {
     });
 
     this.ws.on('error', (err) => {
+      if (err.message && /Unexpected server response: 401/.test(err.message)) {
+        this.shouldReconnect = false;
+        err.code = 'EUNAUTHORIZED';
+      }
       this.onError(err);
     });
   }
 
   _handleControlMessage(msg) {
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
     switch (msg.type) {
       case MSG.TUNNEL_ASSIGNED:
         this.subdomain = msg.subdomain;
@@ -155,18 +162,21 @@ class TunnelClient {
     if (frame.frameType === FRAME_REQUEST_BODY) {
       const stream = this.requestStreams.get(frame.requestId);
       if (stream && stream.localReq && !stream.localReq.destroyed) {
-        stream.localReq.write(frame.data);
+        writeBounded(stream.localReq, frame.data);
       }
     } else if (frame.frameType === FRAME_TCP_DATA) {
       const sock = this.tcpSockets.get(frame.requestId);
       if (sock && !sock.destroyed) {
-        sock.write(frame.data);
+        writeBounded(sock, frame.data);
       }
     }
   }
 
   _handleTcpConnect(connId) {
+    if (typeof connId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(connId)) return;
+    if (this.tcpSockets.has(connId) || this.tcpSockets.size >= 128) return;
     const sock = net.createConnection({ host: this.localHost, port: this.localPort });
+    sock.setTimeout(300000, () => sock.destroy());
     this.tcpSockets.set(connId, sock);
     this.onRequest({ method: 'TCP', path: `→ localhost:${this.localPort}`, statusCode: 0, latency: 0 });
 
@@ -205,6 +215,11 @@ class TunnelClient {
 
   _handleRequestStart(msg) {
     const { requestId, method, path, headers } = msg;
+    if (typeof requestId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(requestId)) return;
+    if (this.requestStreams.has(requestId) || this.requestStreams.size >= 128) {
+      sendControl(this.ws, { type: MSG.STREAM_ERROR, requestId, message: 'Too many active requests.' });
+      return;
+    }
     const forward = createForwardRequest(
       this.localHost,
       this.localPort,

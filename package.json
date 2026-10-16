@@ -1,14 +1,20 @@
 {
   "name": "privatetunnel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "ngrok-like tunnel system - expose local servers to the internet",
   "author": "Jindanet",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "private": true,
   "bin": {
     "ptunnel": "./client/bin/ptunnel.js"
   },
   "main": "app/main.js",
   "scripts": {
+    "pretest": "node node_modules/electron/install.js",
+    "test": "node --test",
     "server": "node server/index.js",
     "client": "node client/bin/ptunnel.js",
     "app": "electron .",
@@ -18,22 +24,32 @@
     "build:macos": "pkg client/bin/ptunnel.js --targets node22-macos-x64 --output dist/ptunnel-macos",
     "build:macos-arm": "pkg client/bin/ptunnel.js --targets node22-macos-arm64 --output dist/ptunnel-macos-arm64",
     "build:app": "electron-builder --win --linux --mac",
-    "build:app:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false CSC_LINK=false electron-builder --win --config.win.signAndEditExecutable=false",
+    "build:app:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --config.win.signExecutable=false",
     "build:app:linux": "electron-builder --linux",
     "build:app:mac": "electron-builder --mac"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
     "dotenv": "^17.3.1",
-    "mysql2": "^3.22.1",
-    "ws": "^8.18.0"
+    "mysql2": "^3.24.6",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
+    "@yao-pkg/pkg": "^6.23.0",
     "cross-env": "^10.1.0",
-    "electron": "^31.7.7",
-    "electron-builder": "^25.1.8"
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3"
+  },
+  "overrides": {
+    "@electron/get": "^5.1.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.9.0": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.28.2": true
   },
   "build": {
+    "npmRebuild": false,
     "appId": "com.jindanet.privatetunnel",
     "productName": "PrivateTunnel",
     "files": [
@@ -57,8 +73,7 @@
           ]
         }
       ],
-      "signingHashAlgorithms": [],
-      "sign": null
+      "signExecutable": false
     },
     "linux": {
       "target": [

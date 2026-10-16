@@ -12,7 +12,9 @@ const CONFIG_PATH = path.resolve(process.env.PTUNNEL_CONFIG_PATH || path.join(HO
 
 function loadConfig() {
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const content = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    if (process.platform !== 'win32') fs.chmodSync(CONFIG_PATH, 0o600);
+    return JSON.parse(content);
   } catch {
     return {};
   }
@@ -20,7 +22,8 @@ function loadConfig() {
 
 function saveConfig(data) {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), 'utf-8');
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  if (process.platform !== 'win32') fs.chmodSync(CONFIG_PATH, 0o600);
 }
 
 let config = loadConfig();
@@ -40,6 +43,26 @@ function maskSecret(value) {
   if (!raw) return '(not set)';
   if (raw.length <= 8) return '*'.repeat(raw.length);
   return `${raw.slice(0, 4)}${'*'.repeat(Math.max(4, raw.length - 8))}${raw.slice(-4)}`;
+}
+
+function buildTunnelProfileClientId(baseClientId, {
+  tunnelType,
+  localHost,
+  localPort,
+  publishDomain,
+  publishMode,
+  desiredSubdomain,
+}) {
+  const profileKey = JSON.stringify({
+    tunnelType: tunnelType === 'tcp' ? 'tcp' : 'http',
+    localHost: String(localHost || 'localhost').trim().toLowerCase(),
+    localPort: Number(localPort) || 0,
+    publishDomain: String(publishDomain || '').trim().toLowerCase(),
+    publishMode: publishMode === 'root' ? 'root' : 'subdomain',
+    desiredSubdomain: String(desiredSubdomain || '').trim().toLowerCase(),
+  });
+  const digest = crypto.createHash('sha256').update(profileKey).digest('hex').slice(0, 16);
+  return `${baseClientId}:${digest}`;
 }
 
 function printHelp() {
@@ -270,11 +293,21 @@ if (!serverUrl || !token) {
 
 const publishDomain = options.domain;
 const publishMode = options.root ? 'root' : 'subdomain';
+const desiredSubdomain = '';
 
 if (publishMode === 'root' && tunnelType !== 'http') {
   console.error('Error: --root is only valid for HTTP tunnels.');
   process.exit(1);
 }
+
+const tunnelClientId = buildTunnelProfileClientId(clientId, {
+  tunnelType,
+  localHost,
+  localPort,
+  publishDomain,
+  publishMode,
+  desiredSubdomain,
+});
 
 // Initialize UI
 const ui = new TunnelUI();
@@ -286,7 +319,7 @@ const client = new TunnelClient({
   token,
   localHost,
   localPort,
-  clientId,
+  clientId: tunnelClientId,
   tunnelType,
   publishDomain,
   publishMode,

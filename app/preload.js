@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   getConfig:            () => ipcRenderer.invoke('get-config'),
   validateServerProfile:(data) => ipcRenderer.invoke('validate-server-profile', data),
+  testServerProfile:    (data) => ipcRenderer.invoke('test-server-profile', data),
   saveServerProfile:    (data) => ipcRenderer.invoke('save-server-profile', data),
   checkTunnelConfig:    (data) => ipcRenderer.invoke('check-tunnel-config', data),
   addTunnel:            (data) => ipcRenderer.invoke('add-tunnel', data),

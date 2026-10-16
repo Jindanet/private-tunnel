@@ -16,6 +16,7 @@ function isElevated() {
 }
 
 function warnIfNotElevated() {
+  if (process.env.AUTO_FIREWALL !== 'true') return;
   if (!isElevated()) {
     const cmd = platform === 'win32'
       ? 'Run as Administrator'
@@ -26,6 +27,8 @@ function warnIfNotElevated() {
 }
 
 function openPort(port) {
+  if (process.env.AUTO_FIREWALL !== 'true') return true;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
   try {
     if (platform === 'win32') {
       execSync(
@@ -49,6 +52,8 @@ function openPort(port) {
 }
 
 function closePort(port) {
+  if (process.env.AUTO_FIREWALL !== 'true') return true;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
   try {
     if (platform === 'win32') {
       execSync(

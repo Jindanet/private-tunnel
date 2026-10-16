@@ -10,20 +10,37 @@ const {
   initDatabase,
   getServerSettings,
   getBootstrapPasswordFilePath,
-  isUsingLegacyDefaultPassword,
+  isUsingLegacyPasswordHash,
+  closeDatabase,
 } = require('./db');
 const { buildRuntimeRoutes, isExactHost, matchManagedHttpHost, normalizeDomain } = require('./routing');
+const { authenticateTunnel, isValidTunnelToken, clientIp, createAttemptLimiter, isAdminHost } = require('./security');
 
 warnIfNotElevated();
 
 const WS_PORT = process.env.WS_PORT || 8080;
 const DASHBOARD_PORT = process.env.DASHBOARD_PORT || 8081;
 const PROXY_PORT = process.env.PROXY_PORT || 8082;
+const INTERNAL_HOST = process.env.INTERNAL_HOST || '127.0.0.1';
 const runtimeConfig = {};
+let tunnelWebSockets = null;
 
 async function refreshRuntimeConfig() {
-  const settings = await getServerSettings();
-  Object.assign(runtimeConfig, settings, buildRuntimeRoutes(settings));
+  const previousToken = runtimeConfig.tunnelToken;
+  let settings;
+  try {
+    settings = await getServerSettings();
+  } catch (error) {
+    // A failed mirror write may follow a committed primary key rotation.
+    // Without an authoritative reread, stop trusting cached credentials.
+    runtimeConfig.tunnelAuthenticationDisabled = true;
+    if (tunnelWebSockets) for (const ws of tunnelWebSockets.clients) ws.close(4001, 'Access key could not be verified.');
+    throw error;
+  }
+  Object.assign(runtimeConfig, settings, buildRuntimeRoutes(settings), { tunnelAuthenticationDisabled: false });
+  if (tunnelWebSockets && previousToken !== runtimeConfig.tunnelToken) {
+    for (const ws of tunnelWebSockets.clients) ws.close(4001, 'Access key changed.');
+  }
   return runtimeConfig;
 }
 
@@ -40,8 +57,10 @@ async function main() {
   await initDatabase();
   await refreshRuntimeConfig();
 
-  if (!runtimeConfig.hasTunnelToken) {
+  if (!runtimeConfig.tunnelToken && process.env.ALLOW_UNAUTHENTICATED_TUNNELS === 'true') {
     console.warn('[Auth] WARNING: Tunnel token is not configured — clients can connect without authentication.');
+  } else if (!isValidTunnelToken(runtimeConfig.tunnelToken)) {
+    console.warn('[Auth] Tunnel connections are disabled until the access key is replaced in admin Settings (32–4096 characters, randomly generated).');
   } else {
     console.log('[Auth] Token authentication enabled.');
   }
@@ -54,8 +73,8 @@ async function main() {
   if (bootstrapPasswordFile) {
     console.warn(`[Dashboard] Initial admin password saved to: ${bootstrapPasswordFile}`);
   }
-  if (await isUsingLegacyDefaultPassword()) {
-    console.warn('[Dashboard] WARNING: This installation is still using the legacy default admin password. Rotate it from the admin UI.');
+  if (await isUsingLegacyPasswordHash()) {
+    console.warn('[Dashboard] WARNING: This installation uses a legacy password hash. Sign in to upgrade its storage, then rotate the admin password.');
   }
 
   const tunnelManager = new TunnelManager(runtimeConfig);
@@ -69,9 +88,13 @@ async function main() {
     noServer: true,
     clientTracking: true,
     perMessageDeflate: false,
+    maxPayload: 1024 * 1024,
   });
+  tunnelWebSockets = wss;
+  const upgradeLimiter = createAttemptLimiter({ max: 60 });
 
   wsServer.on('upgrade', (req, socket, head) => {
+    socket.on('error', () => socket.destroy());
     let pathname = '';
     try {
       pathname = new URL(req.url, 'http://localhost').pathname;
@@ -84,37 +107,38 @@ async function main() {
       return;
     }
 
+    if (!upgradeLimiter.take(clientIp(req))) {
+      socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n', () => socket.destroy());
+      return;
+    }
+
+    if (runtimeConfig.tunnelAuthenticationDisabled || !isAdminHost(req, runtimeConfig.primaryDomain)
+      || !authenticateTunnel(req, runtimeConfig.tunnelToken, {
+        allowLegacyQuery: process.env.ALLOW_LEGACY_QUERY_TOKEN === 'true',
+        allowUnauthenticated: process.env.ALLOW_UNAUTHENTICATED_TUNNELS === 'true',
+      })) {
+      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () => socket.destroy());
+      return;
+    }
+    if (wss.clients.size >= 200) {
+      socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n', () => socket.destroy());
+      return;
+    }
+
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
   });
 
   wss.on('connection', (ws, req) => {
-    const ip = req.headers['x-real-ip']
-      || req.headers['cf-connecting-ip']
-      || req.headers['x-forwarded-for']
-      || req.socket.remoteAddress;
-
-    if (runtimeConfig.tunnelToken) {
-      try {
-        const urlObj = new URL(req.url, 'http://localhost');
-        const token = urlObj.searchParams.get('token');
-        if (token !== runtimeConfig.tunnelToken) {
-          console.log(`[Auth] Rejected unauthorized connection from ${ip}`);
-          ws.close(4001, 'Unauthorized: invalid or missing token');
-          return;
-        }
-      } catch {
-        ws.close(4001, 'Unauthorized');
-        return;
-      }
-    }
+    ws.on('error', () => {});
+    const ip = clientIp(req);
 
     console.log(`[WS:8080] Tunnel client connected from ${ip}`);
     tunnelManager.handleNewClient(ws, ip);
   });
 
-  wsServer.listen(WS_PORT, () => {
+  wsServer.listen(WS_PORT, INTERNAL_HOST, () => {
     console.log(`[WS:${WS_PORT}] WebSocket server ready`);
   });
 
@@ -127,7 +151,7 @@ async function main() {
     },
   });
 
-  dashboardServer.listen(DASHBOARD_PORT, () => {
+  dashboardServer.listen(DASHBOARD_PORT, INTERNAL_HOST, () => {
     console.log(`[Dashboard:${DASHBOARD_PORT}] Dashboard server ready`);
   });
 
@@ -146,7 +170,7 @@ async function main() {
     }
   });
 
-  proxyServer.listen(PROXY_PORT, () => {
+  proxyServer.listen(PROXY_PORT, INTERNAL_HOST, () => {
     console.log(`[Proxy:${PROXY_PORT}] HTTP proxy server ready`);
     if (runtimeConfig.primaryDomain) {
       console.log(`[Dashboard] Admin URL: https://${runtimeConfig.primaryDomain}${runtimeConfig.adminBasePath}`);
@@ -162,6 +186,26 @@ async function main() {
     }
     console.log('[Server] All services started successfully');
   });
+
+  for (const server of [wsServer, dashboardServer, proxyServer]) {
+    server.headersTimeout = 15000;
+    server.requestTimeout = 30000;
+  }
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    for (const tunnel of tunnelManager.getLiveTunnels()) tunnelManager._removeTunnel(tunnel.tunnelKey);
+    for (const ws of wss.clients) ws.terminate();
+    const deadline = setTimeout(() => process.exit(1), 5000);
+    deadline.unref();
+    Promise.all([wsServer, dashboardServer, proxyServer].map((server) => new Promise((resolve) => {
+      server.close(resolve);
+      server.closeAllConnections();
+    }))).then(() => closeDatabase()).then(() => { clearTimeout(deadline); process.exit(0); });
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 main().catch((error) => {

@@ -1,80 +1,100 @@
 const net = require('node:net');
+const { validateHeaderName, validateHeaderValue } = require('node:http');
 const crypto = require('node:crypto');
-const { MSG, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, decodeDataFrame, sendControl, sendData } = require('../shared/protocol');
+const { redactLogUrl } = require('./security');
+const { MSG, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, PROTOCOL_VERSION, decodeDataFrame, sendControl, sendData, writeBounded } = require('../shared/protocol');
 const { generate, RESERVED } = require('./subdomain');
 const { getClientMapping, getClientMappingByAssignedHost, isSubdomainTaken, saveMapping, touchClient, logRequest } = require('./db');
 const { openPort, closePort } = require('./firewall');
 const { normalizeDomain, buildHttpHost, getTcpAddress, getTunnelHttpOrigin } = require('./routing');
-
-const TCP_PORT_MIN = parseInt(process.env.TCP_PORT_MIN, 10) || 30000;
-const TCP_PORT_MAX = parseInt(process.env.TCP_PORT_MAX, 10) || 40000;
-
-function isPortFree(port) {
-  return new Promise((resolve) => {
-    const tester = net.createServer();
-    tester.once('error', () => resolve(false));
-    tester.once('listening', () => tester.close(() => resolve(true)));
-    tester.listen(port, '0.0.0.0');
-  });
-}
 
 class TunnelManager {
   constructor(runtimeConfig) {
     this.runtimeConfig = runtimeConfig || {};
     this.tunnels = new Map();
     this.httpHosts = new Map();
-    this.usedTcpPorts = new Set();
-  }
-
-  async _allocateTcpPort() {
-    for (let port = TCP_PORT_MIN; port <= TCP_PORT_MAX; port++) {
-      if (this.usedTcpPorts.has(port)) continue;
-      if (await isPortFree(port)) {
-        this.usedTcpPorts.add(port);
-        return port;
-      }
-    }
-
-    return null;
   }
 
   handleNewClient(ws, clientIp) {
     let assignedTunnelKey = null;
+    let opening = false;
+    let checking = false;
+    let closed = false;
+    const removeAssignedTunnel = () => {
+      const tunnel = this.tunnels.get(assignedTunnelKey);
+      const removed = tunnel && tunnel.ws === ws ? this._removeTunnel(assignedTunnelKey, tunnel) : null;
+      assignedTunnelKey = null;
+      return removed;
+    };
+    const reportError = (error) => {
+      const message = error && error.message ? error.message : 'Tunnel error';
+      console.error('[TunnelManager] Control error:', message);
+      if (!closed && ws.readyState === ws.OPEN) {
+        sendControl(ws, { type: MSG.TUNNEL_ERROR, message });
+      }
+    };
+    const setTunnelKey = (tunnelKey) => {
+      if (tunnelKey && (closed || ws.readyState !== ws.OPEN)) {
+        const tunnel = this.tunnels.get(tunnelKey);
+        if (tunnel && tunnel.ws === ws) this._removeTunnel(tunnelKey, tunnel);
+        return;
+      }
+      assignedTunnelKey = tunnelKey;
+    };
 
     ws.on('message', (data, isBinary) => {
-      if (isBinary) {
-        this._handleBinaryFrame(data, assignedTunnelKey);
-        return;
-      }
-
+      if (closed || ws.readyState !== ws.OPEN) return;
       let msg;
       try {
+        if (isBinary) {
+          if (this.tunnels.get(assignedTunnelKey)?.ws === ws) {
+            this._handleBinaryFrame(data, assignedTunnelKey);
+          }
+          return;
+        }
         msg = JSON.parse(data.toString());
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.type !== 'string') {
+          throw new Error('Invalid control message');
+        }
       } catch (error) {
-        console.error('[TunnelManager] Invalid message:', error.message);
+        reportError(error);
         return;
       }
 
-      Promise.resolve(
-        this._handleControlMessage(ws, msg, assignedTunnelKey, clientIp, (tunnelKey) => {
-          assignedTunnelKey = tunnelKey;
-        })
-      ).catch((error) => {
-        console.error('[TunnelManager] Control error:', error.message);
-        if (ws.readyState === ws.OPEN) {
-          try {
-            sendControl(ws, { type: MSG.TUNNEL_ERROR, message: error.message || 'Tunnel error' });
-          } catch {}
+      const isOpening = msg.type === MSG.TUNNEL_OPEN;
+      const isChecking = msg.type === MSG.TUNNEL_CHECK;
+      if (isChecking) {
+        if (checking) {
+          sendControl(ws, { type: MSG.TUNNEL_CHECK_RESULT, available: false, message: 'A route check is already in progress.' });
+          return;
         }
+        checking = true;
+      }
+      if (isOpening) {
+        if (opening) {
+          sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'A tunnel is already being opened on this connection.' });
+          return;
+        }
+        opening = true;
+      }
+      // Only tunnel creation is bounded; responses for existing streams remain immediate.
+      Promise.resolve().then(() => {
+        if (closed || ws.readyState !== ws.OPEN) return;
+        return this._handleControlMessage(ws, msg, assignedTunnelKey, clientIp, setTunnelKey);
+      }).catch((error) => {
+        if (isOpening) removeAssignedTunnel();
+        reportError(error);
+      }).finally(() => {
+        if (isOpening) opening = false;
+        if (isChecking) checking = false;
       });
     });
 
     ws.on('close', () => {
-      if (!assignedTunnelKey) return;
-
-      const removed = this._removeTunnel(assignedTunnelKey);
+      closed = true;
+      const removed = removeAssignedTunnel();
       if (removed) {
-        console.log(`[TunnelManager] Tunnel closed: ${removed.publicHost || removed.label || assignedTunnelKey}`);
+        console.log(`[TunnelManager] Tunnel closed: ${removed.publicHost || removed.label || removed.tunnelKey}`);
       }
     });
 
@@ -94,8 +114,16 @@ class TunnelManager {
   }
 
   async _handleControlMessage(ws, msg, currentTunnelKey, clientIp, setTunnelKey) {
+    if (currentTunnelKey && this.tunnels.get(currentTunnelKey)?.ws !== ws) {
+      currentTunnelKey = null;
+      setTunnelKey(null);
+    }
     switch (msg.type) {
       case MSG.TUNNEL_OPEN: {
+        if (Object.prototype.hasOwnProperty.call(msg, 'protocolVersion') && msg.protocolVersion !== PROTOCOL_VERSION) {
+          sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'Unsupported tunnel protocol version.' });
+          return;
+        }
         if (currentTunnelKey) {
           this._removeTunnel(currentTunnelKey);
           setTunnelKey(null);
@@ -103,9 +131,10 @@ class TunnelManager {
 
         const tunnelType = msg.tunnelType === 'tcp' ? 'tcp' : 'http';
         const clientRecord = msg.clientId ? await getClientMapping(msg.clientId) : null;
+        if (ws.readyState !== ws.OPEN) return;
         if (msg.clientId) {
-          this._disconnectExistingClientTunnel(msg.clientId, ws);
           await touchClient(msg.clientId, clientIp);
+          if (ws.readyState !== ws.OPEN) return;
         }
 
         if (tunnelType === 'tcp') {
@@ -119,6 +148,7 @@ class TunnelManager {
       case MSG.TUNNEL_CHECK: {
         const startTime = Date.now();
         const preview = await this.previewTunnelRequest(msg);
+        if (ws.readyState !== ws.OPEN) return;
         const duration = Date.now() - startTime;
         if (duration > 3000) {
           console.log(`[TunnelManager] Slow TUNNEL_CHECK: ${duration}ms for type=${msg.tunnelType}, domain=${msg.publishDomain}`);
@@ -151,10 +181,27 @@ class TunnelManager {
         const pending = tunnel.pendingRequests.get(msg.requestId);
         if (!pending) return;
 
-        pending.statusCode = msg.statusCode;
-        const headers = { ...msg.headers };
-        delete headers['transfer-encoding'];
-        pending.res.writeHead(msg.statusCode, headers);
+        try {
+          if (!Number.isInteger(msg.statusCode) || msg.statusCode < 100 || msg.statusCode > 999) {
+            throw new Error('Invalid response status');
+          }
+          if (!msg.headers || typeof msg.headers !== 'object' || Array.isArray(msg.headers)) {
+            throw new Error('Invalid response headers');
+          }
+          const headers = { ...msg.headers };
+          for (const [name, value] of Object.entries(headers)) {
+            validateHeaderName(name);
+            for (const item of Array.isArray(value) ? value : [value]) {
+              if (typeof item !== 'string' && typeof item !== 'number') throw new Error('Invalid response header value');
+              validateHeaderValue(name, item);
+            }
+            if (name.toLowerCase() === 'transfer-encoding') delete headers[name];
+          }
+          pending.res.writeHead(msg.statusCode, headers);
+          pending.statusCode = msg.statusCode;
+        } catch {
+          this._failPendingResponse(tunnel, msg.requestId, 'Invalid response metadata');
+        }
         break;
       }
 
@@ -199,8 +246,8 @@ class TunnelManager {
         break;
 
       case MSG.TUNNEL_CLOSE: {
-        if (!currentTunnelKey) return;
-        this._removeTunnel(currentTunnelKey);
+        if (currentTunnelKey) this._removeTunnel(currentTunnelKey);
+        setTunnelKey(null);
         ws.close();
         break;
       }
@@ -209,6 +256,7 @@ class TunnelManager {
 
   async _openHttpTunnel(ws, msg, clientIp, clientRecord, setTunnelKey) {
     const assignment = await this._resolveHttpAssignment(msg, clientRecord);
+    if (ws.readyState !== ws.OPEN) return;
     if (assignment.error) {
       sendControl(ws, { type: MSG.TUNNEL_ERROR, message: assignment.error });
       return;
@@ -248,14 +296,21 @@ class TunnelManager {
           os: msg.os || null,
         });
       } catch (error) {
-        this._removeTunnel(tunnelKey);
+        this._removeTunnel(tunnelKey, tunnel);
         setTunnelKey(null);
+        if (ws.readyState !== ws.OPEN) return;
         sendControl(ws, {
           type: MSG.TUNNEL_ERROR,
           message: this._formatMappingError(error, assignment.publicHost),
         });
         return;
       }
+    }
+
+    if (ws.readyState !== ws.OPEN || this.tunnels.get(tunnelKey) !== tunnel) {
+      this._removeTunnel(tunnelKey, tunnel);
+      setTunnelKey(null);
+      return;
     }
 
     sendControl(ws, {
@@ -280,6 +335,7 @@ class TunnelManager {
     const label = await this._generateLabel(clientRecord && clientRecord.subdomain, {
       allowPreferredReuse: Boolean(clientRecord && clientRecord.subdomain),
     });
+    if (ws.readyState !== ws.OPEN) return;
     const tunnel = this._createBaseTunnel(ws, msg, clientIp, clientRecord, {
       tunnelKey: null,
       label,
@@ -289,14 +345,11 @@ class TunnelManager {
       publicUrl: '',
     });
 
-    const tcpPort = await this._allocateTcpPort();
+    tunnel.tcpConnections = new Map();
+    const tcpPort = await this._startTcpServer(ws, tunnel);
+    if (!tcpPort) return;
     if (ws.readyState !== ws.OPEN) {
-      if (tcpPort) this.usedTcpPorts.delete(tcpPort);
-      return;
-    }
-
-    if (!tcpPort) {
-      sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'No TCP ports available in the configured range' });
+      try { tunnel.tcpServer.close(); } catch {}
       return;
     }
 
@@ -304,13 +357,15 @@ class TunnelManager {
     tunnel.tunnelKey = tunnelKey;
     tunnel.tcpPort = tcpPort;
     tunnel.publicUrl = getTcpAddress(tcpPort, domainChoice.domain);
-    tunnel.tcpConnections = new Map();
-    tunnel.tcpServer = this._startTcpServer(tcpPort, ws, tunnel);
-
-    openPort(tcpPort);
-
     this.tunnels.set(tunnelKey, tunnel);
     setTunnelKey(tunnelKey);
+    try {
+      openPort(tcpPort);
+    } catch (error) {
+      this._removeTunnel(tunnelKey, tunnel);
+      setTunnelKey(null);
+      throw error;
+    }
 
     if (msg.clientId) {
       try {
@@ -326,6 +381,12 @@ class TunnelManager {
       } catch (error) {
         console.log(`[TunnelManager] Could not save mapping: ${error.message}`);
       }
+    }
+
+    if (ws.readyState !== ws.OPEN || this.tunnels.get(tunnelKey) !== tunnel) {
+      this._removeTunnel(tunnelKey, tunnel);
+      setTunnelKey(null);
+      return;
     }
 
     sendControl(ws, {
@@ -374,12 +435,15 @@ class TunnelManager {
       ? this._normalizeRequestedLabel(msg.desiredSubdomain || '')
       : '';
     const label = await this._generateLabel(requestedLabel || (clientRecord && clientRecord.subdomain), {
-      allowPreferredReuse: Boolean(clientRecord && clientRecord.subdomain),
+      allowPreferredReuse: Boolean(clientRecord && clientRecord.subdomain && (!requestedLabel || requestedLabel === clientRecord.subdomain)),
       forcePreferred: Boolean(requestedLabel),
     });
     const publicHost = buildHttpHost(label, domainChoice.domain, publishMode);
     if (!publicHost) {
       return { error: 'Could not generate a public host for this tunnel.' };
+    }
+    if (await this._isPublicHostReserved(publicHost, msg.clientId)) {
+      return { error: `The public host ${publicHost} is already reserved by another client profile.` };
     }
 
     return {
@@ -507,6 +571,11 @@ class TunnelManager {
     return false;
   }
 
+  async _isPublicHostReserved(publicHost, clientId) {
+    const savedHost = await getClientMappingByAssignedHost(publicHost);
+    return Boolean(savedHost && (!clientId || savedHost.client_id !== clientId));
+  }
+
   async previewTunnelRequest(msg) {
     const tunnelType = msg.tunnelType === 'tcp' ? 'tcp' : 'http';
 
@@ -555,18 +624,15 @@ class TunnelManager {
         };
       }
 
-      if (msg.clientId) {
-        const savedHost = await getClientMappingByAssignedHost(publicHost);
-        if (savedHost && savedHost.client_id !== msg.clientId) {
-          return {
-            available: false,
-            tunnelType,
-            publishDomain,
-            publishMode,
-            publicHost,
-            message: `The root host ${publicHost} is already reserved by another client profile.`,
-          };
-        }
+      if (await this._isPublicHostReserved(publicHost, msg.clientId)) {
+        return {
+          available: false,
+          tunnelType,
+          publishDomain,
+          publishMode,
+          publicHost,
+          message: `The root host ${publicHost} is already reserved by another client profile.`,
+        };
       }
 
       return {
@@ -667,6 +733,7 @@ class TunnelManager {
   }
 
   _logCompletedRequest(tunnel, pending) {
+    if (process.env.REQUEST_LOGGING === 'false') return;
     const latencyMs = Date.now() - pending.startTime;
     const publicHost = tunnel.publicHost || tunnel.label || 'unknown';
     const logEntry = {
@@ -674,10 +741,10 @@ class TunnelManager {
       clientId: tunnel.clientId,
       visitorIp: pending.visitorIp,
       method: pending.method,
-      path: pending.path,
+      path: redactLogUrl(pending.path),
       host: pending.host,
       userAgent: pending.userAgent,
-      referer: pending.referer,
+      referer: redactLogUrl(pending.referer),
       contentType: pending.reqContentType,
       contentLength: pending.reqContentLength,
       statusCode: pending.statusCode || 0,
@@ -705,23 +772,60 @@ class TunnelManager {
     if (frame.frameType === FRAME_RESPONSE_BODY) {
       const pending = tunnel.pendingRequests.get(frame.requestId);
       if (pending && !pending.res.destroyed) {
-        pending.res.write(frame.data);
-        tunnel.stats.bytesOut += frame.data.length;
+        try {
+          if (writeBounded(pending.res, frame.data)) {
+            tunnel.stats.bytesOut += frame.data.length;
+          } else {
+            this._failPendingResponse(tunnel, frame.requestId, 'Response buffer limit exceeded');
+          }
+        } catch {
+          this._failPendingResponse(tunnel, frame.requestId, 'Could not write response body');
+        }
       }
     } else if (frame.frameType === FRAME_TCP_DATA) {
       const sock = tunnel.tcpConnections && tunnel.tcpConnections.get(frame.requestId);
       if (sock && !sock.destroyed) {
-        sock.write(frame.data);
-        tunnel.stats.bytesOut += frame.data.length;
+        try {
+          if (writeBounded(sock, frame.data)) tunnel.stats.bytesOut += frame.data.length;
+        } catch {
+          sock.destroy();
+        }
       }
     }
   }
 
-  _startTcpServer(port, ws, tunnel) {
+  _failPendingResponse(tunnel, requestId, message) {
+    const pending = tunnel.pendingRequests.get(requestId);
+    if (!pending) return;
+    tunnel.pendingRequests.delete(requestId);
+    clearTimeout(pending.timeout);
+    pending.statusCode = 502;
+    pending.error = message;
+    try {
+      if (!pending.res.destroyed) {
+        if (pending.res.headersSent) pending.res.destroy();
+        else {
+          pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
+          pending.res.end('Bad Gateway');
+        }
+      }
+    } catch {
+      try { pending.res.destroy(); } catch {}
+    }
+    this._logCompletedRequest(tunnel, pending);
+    sendControl(tunnel.ws, { type: MSG.STREAM_ERROR, requestId, message });
+  }
+
+  _startTcpServer(ws, tunnel) {
     const server = net.createServer((sock) => {
+      if (ws.readyState !== ws.OPEN || this.tunnels.get(tunnel.tunnelKey) !== tunnel || tunnel.tcpConnections.size >= 128) {
+        sock.destroy();
+        return;
+      }
       const connId = crypto.randomUUID();
       tunnel.tcpConnections.set(connId, sock);
       tunnel.stats.connections++;
+      sock.setTimeout(5 * 60 * 1000, () => sock.destroy());
 
       sendControl(ws, { type: MSG.TCP_CONNECT, connId });
 
@@ -742,15 +846,55 @@ class TunnelManager {
       sock.on('error', () => sock.destroy());
     });
 
-    server.listen(port, () => {
-      console.log(`[TCP] Listening on port ${port} for tunnel ${tunnel.publicUrl || tunnel.label}`);
+    tunnel.tcpServer = server;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error, port) => {
+        if (settled) return;
+        settled = true;
+        ws.removeListener('close', onDisconnect);
+        server.removeListener('listening', onListening);
+        if (error || !port) {
+          try { server.close(); } catch {}
+        }
+        if (error) reject(error);
+        else resolve(port);
+      };
+      const onDisconnect = () => finish(null, null);
+      const onListening = () => {
+        const address = server.address();
+        if (!address || !Number.isInteger(address.port) || address.port < 1) {
+          finish(new Error('Could not determine the public TCP port.'));
+          return;
+        }
+        if (ws.readyState !== ws.OPEN) {
+          finish(null, null);
+          return;
+        }
+        console.log(`[TCP] Listening on port ${address.port} for tunnel ${tunnel.label}`);
+        finish(null, address.port);
+      };
+      ws.once('close', onDisconnect);
+      server.once('listening', onListening);
+      server.on('error', (error) => {
+        console.error(`[TCP] Server error on port ${tunnel.tcpPort || 'pending'}:`, error.message);
+        if (!settled) {
+          finish(error);
+          return;
+        }
+        const removed = this._removeTunnel(tunnel.tunnelKey, tunnel);
+        if (removed && ws.readyState === ws.OPEN) {
+          sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'Could not listen on the allocated TCP port.' });
+        }
+      });
+      try {
+        // The actual listener keeps the OS-assigned port reserved throughout setup.
+        server.listen(0);
+        if (ws.readyState !== ws.OPEN) onDisconnect();
+      } catch (error) {
+        finish(error);
+      }
     });
-
-    server.on('error', (err) => {
-      console.error(`[TCP] Server error on port ${port}:`, err.message);
-    });
-
-    return server;
   }
 
   getTunnel(identifier) {
@@ -770,62 +914,42 @@ class TunnelManager {
     return [...this.tunnels.values()];
   }
 
-  _disconnectExistingClientTunnel(clientId, nextWs) {
-    if (!clientId) return;
-
-    for (const [tunnelKey, tunnel] of this.tunnels.entries()) {
-      if (tunnel.clientId !== clientId) continue;
-      if (tunnel.ws === nextWs) continue;
-
-      const removed = this._removeTunnel(tunnelKey);
-      if (removed && removed.ws && removed.ws.readyState === removed.ws.OPEN) {
-        try {
-          sendControl(removed.ws, {
-            type: MSG.TUNNEL_ERROR,
-            message: 'This tunnel was replaced by a newer connection for the same client.',
-          });
-        } catch {}
-
-        try {
-          removed.ws.close();
-        } catch {}
-      }
-    }
-  }
-
-  _removeTunnel(tunnelKey) {
+  _removeTunnel(tunnelKey, expectedTunnel) {
     const tunnel = this.tunnels.get(tunnelKey);
-    if (!tunnel) return null;
+    if (!tunnel || (expectedTunnel && tunnel !== expectedTunnel)) return null;
+
+    this.tunnels.delete(tunnelKey);
+    if (this.httpHosts.get(normalizeDomain(tunnel.publicHost)) === tunnelKey) {
+      this.httpHosts.delete(normalizeDomain(tunnel.publicHost));
+    }
 
     for (const [, pending] of tunnel.pendingRequests) {
       clearTimeout(pending.timeout);
-      if (!pending.res.destroyed) {
-        if (!pending.res.headersSent) {
-          pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
+      try {
+        if (!pending.res.destroyed) {
+          if (!pending.res.headersSent) {
+            pending.res.writeHead(502, { 'Content-Type': 'text/plain' });
+          }
+          pending.res.end('Tunnel disconnected');
         }
-        pending.res.end('Tunnel disconnected');
-      }
+      } catch {}
     }
     tunnel.pendingRequests.clear();
 
     if (tunnel.tcpServer) {
-      tunnel.tcpServer.close();
-      this.usedTcpPorts.delete(tunnel.tcpPort);
+      try { tunnel.tcpServer.close(); } catch {}
+    }
+    if (tunnel.tcpPort) {
       closePort(tunnel.tcpPort);
     }
 
     if (tunnel.tcpConnections) {
       for (const [, sock] of tunnel.tcpConnections) {
-        sock.destroy();
+        try { sock.destroy(); } catch {}
       }
       tunnel.tcpConnections.clear();
     }
 
-    if (tunnel.publicHost) {
-      this.httpHosts.delete(normalizeDomain(tunnel.publicHost));
-    }
-
-    this.tunnels.delete(tunnelKey);
     return tunnel;
   }
 }

@@ -1,0 +1,38 @@
+[Unit]
+Description=PrivateTunnel server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=privatetunnel
+Group=privatetunnel
+WorkingDirectory=/opt/private-tunnel
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/private-tunnel/server.env
+Environment=DATA_DIR=/var/lib/private-tunnel
+Environment=SQLITE_PATH=/var/lib/private-tunnel/tunnel.db
+Environment=INTERNAL_HOST=127.0.0.1
+Environment=AUTO_FIREWALL=false
+ExecStart=/usr/bin/node /opt/private-tunnel/server/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+StateDirectory=private-tunnel
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/private-tunnel
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

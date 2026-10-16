@@ -1,7 +1,10 @@
-const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage, nativeTheme } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const net = require('node:net');
+const { pathToFileURL } = require('node:url');
+const { getExternalWebUrl, validateTunnelInput } = require('./security');
 const WebSocket = require('ws');
 const { normalizeServerWebSocketUrl } = require('../client/server-url');
 const { MSG, sendControl } = require('../shared/protocol');
@@ -21,7 +24,8 @@ function loadConfig() {
 
 function saveConfig(nextConfig) {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextConfig, null, 2), 'utf-8');
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextConfig, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  if (process.platform !== 'win32') fs.chmodSync(CONFIG_PATH, 0o600);
 }
 
 function normalizeDesiredSubdomain(value) {
@@ -48,7 +52,7 @@ function validateServerProfileInput(url, token) {
   } else {
     try {
       const parsed = new URL(normalizedUrl);
-      if (!/^wss?:$/i.test(parsed.protocol)) {
+      if (!/^wss?:$/i.test(parsed.protocol) || parsed.username || parsed.password || parsed.hash) {
         errors.serverUrl = 'Server URL must start with ws:// or wss://.';
       }
     } catch {
@@ -60,6 +64,8 @@ function validateServerProfileInput(url, token) {
     errors.token = 'Access token is required before this GUI can create tunnels.';
   } else if (rawToken.length < 6) {
     errors.token = 'Access token looks too short. Paste the full token from the server hoster.';
+  } else if (rawToken.length > 4096 || /[\r\n]/.test(rawToken)) {
+    errors.token = 'Paste a single access key without line breaks.';
   }
 
   return {
@@ -70,9 +76,9 @@ function validateServerProfileInput(url, token) {
   };
 }
 
-function buildAuthenticatedWebSocketUrl(serverUrl, token) {
+function buildAuthenticatedWebSocketUrl(serverUrl) {
   const url = new URL(normalizeServerWebSocketUrl(serverUrl));
-  url.searchParams.set('token', String(token || '').trim());
+  url.searchParams.delete('token');
   return url.toString();
 }
 
@@ -102,7 +108,9 @@ async function checkTunnelConfigWithServer({
       resolve(payload);
     };
 
-    const ws = new WebSocket(buildAuthenticatedWebSocketUrl(serverUrl, token));
+    const ws = new WebSocket(buildAuthenticatedWebSocketUrl(serverUrl), {
+      headers: { Authorization: `Bearer ${token}` }, handshakeTimeout: 10000, maxPayload: 1024 * 1024,
+    });
     const timeout = setTimeout(() => {
       finish({
         available: false,
@@ -126,7 +134,7 @@ async function checkTunnelConfigWithServer({
       try {
         const msg = JSON.parse(data.toString());
         if (msg.type === MSG.TUNNEL_CHECK_RESULT) {
-          finish(msg);
+          finish({ ...msg, reachable: true });
         } else if (msg.type === MSG.TUNNEL_ERROR) {
           finish({
             available: false,
@@ -160,7 +168,9 @@ async function checkTunnelConfigWithServer({
     ws.on('error', (error) => {
       finish({
         available: false,
-        message: error && error.message
+        message: error && /Unexpected server response: 401/.test(error.message)
+          ? 'The saved token is invalid for this server.'
+          : error && error.message
           ? `Could not reach the server: ${error.message}`
           : 'Could not reach the server for this validation request.',
       });
@@ -177,28 +187,60 @@ config.tunnels = config.tunnels.map(normalizeTunnelConfig);
 saveConfig(config);
 
 const tunnelInstances = new Map();
+const pendingStarts = new Map();
+
+function isLocalServiceReady(port) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: 'localhost', port });
+    const finish = (ready) => { socket.destroy(); resolve(ready); };
+    socket.setTimeout(1500, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+const RENDERER_PATH = path.join(__dirname, 'renderer', 'index.html');
+
+function handleTrusted(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents
+      || event.senderFrame !== mainWindow.webContents.mainFrame
+      || event.senderFrame.url !== pathToFileURL(RENDERER_PATH).href) {
+      throw new Error('Untrusted application frame.');
+    }
+    return handler(event, ...args);
+  });
+}
 
 function createWindow() {
+  nativeTheme.themeSource = 'dark';
   mainWindow = new BrowserWindow({
-    width: 430,
-    height: 760,
+    width: 1040,
+    height: 780,
+    minWidth: 380,
+    minHeight: 540,
     useContentSize: true,
-    resizable: false,
-    maximizable: false,
+    resizable: true,
+    maximizable: true,
     autoHideMenuBar: true,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#14161a',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault());
+  mainWindow.webContents.session.setPermissionRequestHandler((_, __, callback) => callback(false));
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false);
+  mainWindow.loadFile(RENDERER_PATH);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -246,12 +288,12 @@ app.on('before-quit', () => {
   }
 });
 
-ipcMain.handle('get-config', () => ({
+handleTrusted('get-config', () => ({
   ...config,
   configPath: CONFIG_PATH,
 }));
 
-ipcMain.handle('validate-server-profile', (_, payload) => {
+handleTrusted('validate-server-profile', (_, payload) => {
   const result = validateServerProfileInput(payload && payload.serverUrl, payload && payload.token);
   return {
     ok: result.ok,
@@ -260,7 +302,14 @@ ipcMain.handle('validate-server-profile', (_, payload) => {
   };
 });
 
-ipcMain.handle('save-server-profile', (_, payload) => {
+handleTrusted('test-server-profile', async (_, payload) => {
+  const result = validateServerProfileInput(payload && payload.serverUrl, payload && payload.token);
+  if (!result.ok) return { ok: false, errors: result.errors };
+  const check = await checkTunnelConfigWithServer({ serverUrl: result.normalizedUrl, token: result.token, type: 'http' });
+  return { ok: check.reachable === true, message: check.reachable ? 'Server connection verified.' : check.message };
+});
+
+handleTrusted('save-server-profile', (_, payload) => {
   const result = validateServerProfileInput(payload && payload.serverUrl, payload && payload.token);
   if (!result.ok) {
     return {
@@ -280,7 +329,7 @@ ipcMain.handle('save-server-profile', (_, payload) => {
   };
 });
 
-ipcMain.handle('check-tunnel-config', async (_, payload) => {
+handleTrusted('check-tunnel-config', async (_, payload) => {
   return checkTunnelConfigWithServer({
     serverUrl: config.serverUrl,
     token: config.token,
@@ -292,16 +341,14 @@ ipcMain.handle('check-tunnel-config', async (_, payload) => {
   });
 });
 
-ipcMain.handle('add-tunnel', (_, payload) => {
+handleTrusted('add-tunnel', (_, payload) => {
+  const validated = validateTunnelInput(payload);
+  const requestedClientId = typeof payload.clientId === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(payload.clientId)
+    ? payload.clientId : crypto.randomUUID();
   const tunnel = normalizeTunnelConfig({
     id: crypto.randomUUID(),
-    clientId: crypto.randomUUID(),
-    name: payload && payload.name ? payload.name : '',
-    type: payload && payload.type === 'tcp' ? 'tcp' : 'http',
-    port: Number.parseInt(payload && payload.port, 10),
-    publishDomain: payload && payload.publishDomain,
-    publishMode: payload && payload.publishMode,
-    desiredSubdomain: payload && payload.desiredSubdomain,
+    clientId: requestedClientId,
+    ...validated,
   });
 
   tunnel.name = tunnel.name || (tunnel.type === 'http' ? `HTTP :${tunnel.port}` : `TCP :${tunnel.port}`);
@@ -311,7 +358,8 @@ ipcMain.handle('add-tunnel', (_, payload) => {
   return tunnel;
 });
 
-ipcMain.handle('delete-tunnel', (_, id) => {
+handleTrusted('delete-tunnel', (_, id) => {
+  pendingStarts.delete(id);
   const client = tunnelInstances.get(id);
   if (client) {
     client.disconnect();
@@ -322,12 +370,19 @@ ipcMain.handle('delete-tunnel', (_, id) => {
   return true;
 });
 
-ipcMain.handle('start-tunnel', (_, id) => {
+handleTrusted('start-tunnel', async (_, id) => {
   const tunnel = config.tunnels.find((item) => item.id === id);
   if (!tunnel) return { error: 'Tunnel not found' };
+  try { validateTunnelInput(tunnel); } catch (error) { return { error: error.message }; }
   if (!config.serverUrl || !config.token) {
     return { error: 'Save the server profile first. This GUI requires both server URL and token.' };
   }
+  const generation = Symbol('start');
+  pendingStarts.set(id, generation);
+  const ready = await isLocalServiceReady(tunnel.port);
+  if (pendingStarts.get(id) !== generation) return { error: 'Start cancelled.' };
+  pendingStarts.delete(id);
+  if (!ready) return { error: `Your local app is not running on port ${tunnel.port}. Open it first, then try again.` };
 
   const existing = tunnelInstances.get(id);
   if (existing) {
@@ -347,15 +402,19 @@ ipcMain.handle('start-tunnel', (_, id) => {
     publishMode: tunnel.publishMode === 'root' ? 'root' : 'subdomain',
     desiredSubdomain: tunnel.desiredSubdomain || '',
     onConnected: ({ url }) => {
+      if (tunnelInstances.get(id) !== client) return;
       mainWindow?.webContents.send('tunnel-status', { id, status: 'online', url });
     },
     onDisconnected: () => {
+      if (tunnelInstances.get(id) !== client) return;
       mainWindow?.webContents.send('tunnel-status', { id, status: 'reconnecting', url: '' });
     },
     onRequest: (info) => {
+      if (tunnelInstances.get(id) !== client) return;
       mainWindow?.webContents.send('tunnel-request', { id, ...info });
     },
     onError: (error) => {
+      if (tunnelInstances.get(id) !== client) return;
       if (error.code === 'ECONNREFUSED') {
         mainWindow?.webContents.send('tunnel-status', { id, status: 'reconnecting', url: '' });
       } else if (error.code === 'EUNAUTHORIZED') {
@@ -371,12 +430,13 @@ ipcMain.handle('start-tunnel', (_, id) => {
     },
   });
 
-  client.connect();
   tunnelInstances.set(id, client);
+  try { client.connect(); } catch (error) { tunnelInstances.delete(id); return { error: error.message }; }
   return { ok: true };
 });
 
-ipcMain.handle('stop-tunnel', (_, id) => {
+handleTrusted('stop-tunnel', (_, id) => {
+  pendingStarts.delete(id);
   const client = tunnelInstances.get(id);
   if (client) {
     client.disconnect();
@@ -386,12 +446,15 @@ ipcMain.handle('stop-tunnel', (_, id) => {
   return true;
 });
 
-ipcMain.handle('open-external', (_, url) => {
-  shell.openExternal(url);
+handleTrusted('open-external', async (_, url) => {
+  const safeUrl = getExternalWebUrl(url);
+  if (!safeUrl) return false;
+  await shell.openExternal(safeUrl);
   return true;
 });
 
-ipcMain.handle('copy-text', (_, text) => {
+handleTrusted('copy-text', (_, text) => {
+  if (typeof text !== 'string' || text.length > 65536) return false;
   clipboard.writeText(text);
   return true;
 });

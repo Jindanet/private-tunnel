@@ -1,0 +1,16 @@
+node_modules
+.git
+.github
+.env
+.env.*
+!.env.example
+data
+dist
+dist-app
+*.db
+*.db-wal
+*.db-shm
+*.log
+.ptunnel
+.claude
+.playwright-mcp

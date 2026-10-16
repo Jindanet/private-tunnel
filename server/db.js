@@ -3,6 +3,7 @@ const mysql = require('mysql2/promise');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const { hashPassword, verifyPasswordHash, validateNewPassword, validateTunnelToken, redactLogUrl } = require('./security');
 const {
   normalizeDomain,
   normalizeControlRoot,
@@ -19,15 +20,14 @@ const MYSQL_PORT = Number.parseInt(process.env.MYSQL_PORT, 10) || 3306;
 const MYSQL_USER = String(process.env.MYSQL_USER || 'root').trim();
 const MYSQL_PASSWORD = String(process.env.MYSQL_PASSWORD || '').trim();
 const MYSQL_DATABASE = String(process.env.MYSQL_DATABASE || 'privatetunnel').trim();
-const DB_PROVIDER = normalizeBackend(process.env.DB_PROVIDER || 'mysql');
+const DB_PROVIDER = normalizeBackend(process.env.DB_PROVIDER || 'sqlite');
 const DB_SYNC_TARGETS = parseBackendList(process.env.DB_SYNC_TARGETS || '');
 const DB_SYNC_STRICT = parseBooleanEnv(process.env.DB_SYNC_STRICT, false);
-const DB_BOOTSTRAP_SYNC = parseBooleanEnv(process.env.DB_BOOTSTRAP_SYNC, true);
+const DB_BOOTSTRAP_SYNC = parseBooleanEnv(process.env.DB_BOOTSTRAP_SYNC, false);
 const ENV_PRIMARY_DOMAIN = normalizeDomain(process.env.PRIMARY_DOMAIN || process.env.DOMAIN || '');
 const ENV_TUNNEL_DOMAIN = normalizeDomain(process.env.TUNNEL_DOMAIN || process.env.DOMAIN || '');
 const ENV_TUNNEL_TOKEN = String(process.env.TUNNEL_TOKEN || '').trim();
 const ENV_DASHBOARD_PASSWORD = String(process.env.DASHBOARD_PASSWORD || '').trim();
-const LEGACY_DEFAULT_PASSWORD_HASH = crypto.randomBytes(32).toString('hex');
 const CONFIG_KEYS = {
   legacyDashboardPassword: 'dashboard_password',
   adminPasswordHash: 'admin_password_hash',
@@ -42,6 +42,13 @@ let primaryAdapter = null;
 let activeAdapters = new Map();
 let initPromise = null;
 let cleanupTimer = null;
+let passwordQueue = Promise.resolve();
+
+function withPasswordLock(operation) {
+  const result = passwordQueue.then(operation, operation);
+  passwordQueue = result.catch(() => {});
+  return result;
+}
 
 function normalizeBackend(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -105,19 +112,6 @@ function buildPublishDomains(input, fallbackDomain, primaryDomain) {
   }));
 }
 
-function hashPassword(password) {
-  return crypto.createHash('sha256').update(String(password || '')).digest('hex');
-}
-
-function constantTimeEquals(left, right) {
-  const leftBuffer = Buffer.from(String(left || ''), 'utf8');
-  const rightBuffer = Buffer.from(String(right || ''), 'utf8');
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
-}
-
 function getBootstrapPasswordFilePath() {
   return fs.existsSync(BOOTSTRAP_PASSWORD_PATH) ? BOOTSTRAP_PASSWORD_PATH : null;
 }
@@ -131,7 +125,7 @@ function removeBootstrapPasswordFile() {
 }
 
 function writeBootstrapPasswordFile(password) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const content = [
     'PrivateTunnel initial admin password',
     '',
@@ -141,7 +135,8 @@ function writeBootstrapPasswordFile(password) {
     '',
   ].join('\n');
 
-  fs.writeFileSync(BOOTSTRAP_PASSWORD_PATH, content, 'utf8');
+  fs.writeFileSync(BOOTSTRAP_PASSWORD_PATH, content, { encoding: 'utf8', mode: 0o600 });
+  if (process.platform !== 'win32') fs.chmodSync(BOOTSTRAP_PASSWORD_PATH, 0o600);
 }
 
 function normalizeTimestamp(value) {
@@ -192,10 +187,10 @@ function normalizeLogPayload(data) {
     clientId: data.clientId || null,
     visitorIp: data.visitorIp || null,
     method: String(data.method || '').trim(),
-    path: String(data.path || '').trim() || '/',
+    path: redactLogUrl(String(data.path || '').trim() || '/'),
     host: data.host || null,
     userAgent: data.userAgent || null,
-    referer: data.referer || null,
+    referer: redactLogUrl(data.referer) || null,
     contentType: data.contentType || null,
     contentLength: data.contentLength == null ? null : Number(data.contentLength),
     statusCode: data.statusCode == null ? null : Number(data.statusCode),
@@ -269,6 +264,7 @@ class SqliteAdapter {
   async init() {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     this.db = new Database(this.filePath);
+    if (process.platform !== 'win32') fs.chmodSync(this.filePath, 0o600);
     this.db.pragma('journal_mode = WAL');
 
     this.db.exec(`
@@ -622,8 +618,7 @@ class MySqlAdapter {
       queueLimit: 100,
       maxIdle: 10,
       idleTimeout: 60000,
-      acquireTimeout: 15000,
-      timeout: 15000,
+      connectTimeout: 15000,
       enableKeepAlive: true,
       keepAliveInitialDelay: 0,
       charset: 'utf8mb4',
@@ -835,41 +830,28 @@ class MySqlAdapter {
   }
 
   async saveMapping(clientId, payload) {
-    const nextPayload = normalizeClientPayload(payload);
-    await this.execute(`
-      INSERT INTO clients (
-        client_id,
-        subdomain,
-        ip,
-        hostname,
-        os,
-        publish_domain,
-        publish_mode,
-        assigned_host,
-        created_at,
-        last_seen
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        subdomain = VALUES(subdomain),
-        ip = VALUES(ip),
-        hostname = VALUES(hostname),
-        os = VALUES(os),
-        publish_domain = VALUES(publish_domain),
-        publish_mode = VALUES(publish_mode),
-        assigned_host = VALUES(assigned_host),
-        last_seen = VALUES(last_seen)
-    `, [
-      clientId,
-      nextPayload.subdomain,
-      nextPayload.ip,
-      nextPayload.hostname,
-      nextPayload.os,
-      nextPayload.publishDomain,
-      nextPayload.publishMode,
-      nextPayload.assignedHost,
-      toMySqlDateTime(nextPayload.createdAt),
-      toMySqlDateTime(nextPayload.lastSeen),
-    ]);
+    const value = normalizeClientPayload(payload);
+    const fields = [value.subdomain, value.ip, value.hostname, value.os, value.publishDomain,
+      value.publishMode, value.assignedHost, toMySqlDateTime(value.lastSeen)];
+    const update = () => this.execute(`
+      UPDATE clients SET subdomain=?, ip=?, hostname=?, os=?, publish_domain=?,
+        publish_mode=?, assigned_host=?, last_seen=? WHERE client_id=?
+    `, [...fields, clientId]);
+    if (await this.getClientMapping(clientId)) {
+      await update();
+      return;
+    }
+    try {
+      await this.execute(`
+        INSERT INTO clients (client_id, subdomain, ip, hostname, os, publish_domain,
+          publish_mode, assigned_host, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [clientId, ...fields, toMySqlDateTime(value.createdAt)]);
+    } catch (error) {
+      // A simultaneous first write for this same identity may have won. A secondary
+      // host/label conflict must never update the row belonging to another identity.
+      if (error.code !== 'ER_DUP_ENTRY' || !await this.getClientMapping(clientId)) throw error;
+      await update();
+    }
   }
 
   async importClients(rows) {
@@ -1128,6 +1110,8 @@ async function seedServerConfig() {
 
   if (!await getConfigValue(CONFIG_KEYS.tunnelToken) && ENV_TUNNEL_TOKEN) {
     await setConfigValue(CONFIG_KEYS.tunnelToken, ENV_TUNNEL_TOKEN);
+  } else if (!await getConfigValue(CONFIG_KEYS.tunnelToken) && process.env.ALLOW_UNAUTHENTICATED_TUNNELS !== 'true') {
+    await setConfigValue(CONFIG_KEYS.tunnelToken, crypto.randomBytes(32).toString('base64url'));
   }
 
   if (!await getConfigValue(CONFIG_KEYS.publishDomains)) {
@@ -1165,17 +1149,22 @@ async function ensureAdminPassword() {
   }
 
   if (ENV_DASHBOARD_PASSWORD) {
-    await setConfigValue(CONFIG_KEYS.adminPasswordHash, hashPassword(ENV_DASHBOARD_PASSWORD));
+    await setConfigValue(CONFIG_KEYS.adminPasswordHash, await hashPassword(ENV_DASHBOARD_PASSWORD));
     removeBootstrapPasswordFile();
     return;
   }
 
   const bootstrapPassword = crypto.randomBytes(18).toString('base64url');
-  await setConfigValue(CONFIG_KEYS.adminPasswordHash, hashPassword(bootstrapPassword));
+  await setConfigValue(CONFIG_KEYS.adminPasswordHash, await hashPassword(bootstrapPassword));
   writeBootstrapPasswordFile(bootstrapPassword);
 }
 
 async function initDatabase() {
+  if (['your-password-here', 'change-me', 'admin', 'password'].includes(ENV_DASHBOARD_PASSWORD.toLowerCase())) {
+    throw new Error('Replace the example DASHBOARD_PASSWORD, or leave it empty to generate a private bootstrap password.');
+  }
+  if (ENV_DASHBOARD_PASSWORD) validateNewPassword(ENV_DASHBOARD_PASSWORD);
+  if (ENV_TUNNEL_TOKEN) validateTunnelToken(ENV_TUNNEL_TOKEN);
   if (primaryAdapter) {
     return primaryAdapter;
   }
@@ -1185,7 +1174,8 @@ async function initDatabase() {
   }
 
   initPromise = (async () => {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') fs.chmodSync(DATA_DIR, 0o700);
     activeAdapters = await buildAdapterSet();
     primaryAdapter = activeAdapters.get(DB_PROVIDER);
 
@@ -1229,26 +1219,31 @@ async function hasDashboardPassword() {
   return !!await getConfigValue(CONFIG_KEYS.adminPasswordHash);
 }
 
-async function isUsingLegacyDefaultPassword() {
+async function isUsingLegacyPasswordHash() {
   const value = await getConfigValue(CONFIG_KEYS.adminPasswordHash);
-  return !!value && constantTimeEquals(value, LEGACY_DEFAULT_PASSWORD_HASH);
+  return /^[a-f0-9]{64}$/i.test(value || '');
 }
 
 async function verifyPassword(password) {
+  return withPasswordLock(async () => {
   if (!password) return false;
   const value = await getConfigValue(CONFIG_KEYS.adminPasswordHash);
   if (!value) return false;
-  return constantTimeEquals(value, hashPassword(password));
+  const verified = await verifyPasswordHash(password, value);
+  if (verified && !value.startsWith('scrypt$')) {
+    await setConfigValue(CONFIG_KEYS.adminPasswordHash, await hashPassword(password));
+  }
+  return verified;
+  });
 }
 
 async function setDashboardPassword(password) {
-  const nextPassword = String(password || '');
-  if (nextPassword.trim().length < 10) {
-    throw new Error('Admin password must be at least 10 characters long');
-  }
+  const nextPassword = validateNewPassword(password);
 
-  await setConfigValue(CONFIG_KEYS.adminPasswordHash, hashPassword(nextPassword));
-  removeBootstrapPasswordFile();
+  return withPasswordLock(async () => {
+    await setConfigValue(CONFIG_KEYS.adminPasswordHash, await hashPassword(nextPassword));
+    removeBootstrapPasswordFile();
+  });
 }
 
 async function getServerSettings() {
@@ -1269,7 +1264,8 @@ async function getServerSettings() {
   const tunnelDomain = publishDomains.find((entry) => entry.allowSubdomain)?.domain
     || publishDomains[0]?.domain
     || legacyTunnelDomain;
-  const tunnelToken = String(config.get(CONFIG_KEYS.tunnelToken) || ENV_TUNNEL_TOKEN || '').trim();
+  // Preserve invalid stored values so they cannot collapse into opt-in empty authentication.
+  const tunnelToken = String(config.get(CONFIG_KEYS.tunnelToken) || ENV_TUNNEL_TOKEN || '');
 
   return {
     primaryDomain,
@@ -1334,9 +1330,11 @@ async function prepareServerSettings(input, baseSettings) {
     controlRoot: nextControlRoot,
     tunnelDomain: tunnelDomain || nextPrimaryDomain,
     publishDomains: buildPublishDomains(nextPublishDomains, tunnelDomain, nextPrimaryDomain || tunnelDomain),
-    tunnelToken: Object.prototype.hasOwnProperty.call(payload, 'tunnelToken')
-      ? String(payload.tunnelToken || '').trim()
-      : String(resolvedBaseSettings.tunnelToken || '').trim(),
+    tunnelToken: validateTunnelToken(Object.prototype.hasOwnProperty.call(payload, 'tunnelToken')
+      ? payload.tunnelToken
+      : String(resolvedBaseSettings.tunnelToken || ''), {
+      allowEmpty: process.env.ALLOW_UNAUTHENTICATED_TUNNELS === 'true',
+    }),
   };
 
   nextSettings.publishDomains = buildPublishDomains(
@@ -1351,6 +1349,9 @@ async function prepareServerSettings(input, baseSettings) {
 }
 
 async function persistServerSettings(settings) {
+  const token = validateTunnelToken(settings.tunnelToken, {
+    allowEmpty: process.env.ALLOW_UNAUTHENTICATED_TUNNELS === 'true',
+  });
   await setConfigValue(CONFIG_KEYS.primaryDomain, settings.primaryDomain);
   await setConfigValue(CONFIG_KEYS.controlRoot, settings.controlRoot);
   await setConfigValue(CONFIG_KEYS.tunnelDomain, settings.tunnelDomain);
@@ -1358,11 +1359,11 @@ async function persistServerSettings(settings) {
     CONFIG_KEYS.publishDomains,
     settings.publishDomains && settings.publishDomains.length ? JSON.stringify(settings.publishDomains) : ''
   );
-  await setConfigValue(CONFIG_KEYS.tunnelToken, settings.tunnelToken);
+  await setConfigValue(CONFIG_KEYS.tunnelToken, token);
 }
 
 async function updateServerSettings(input) {
-  const nextSettings = input && input.publishDomains ? input : await prepareServerSettings(input);
+  const nextSettings = await prepareServerSettings(input);
   await persistServerSettings(nextSettings);
   return getServerSettings();
 }
@@ -1423,11 +1424,24 @@ async function getTotalRequestCount() {
   return withPrimaryRead('getTotalRequestCount');
 }
 
+async function closeDatabase() {
+  clearInterval(cleanupTimer);
+  cleanupTimer = null;
+  for (const adapter of activeAdapters.values()) {
+    if (adapter.db) adapter.db.close();
+    if (adapter.pool) await adapter.pool.end();
+  }
+  activeAdapters.clear();
+  primaryAdapter = null;
+  initPromise = null;
+}
+
 module.exports = {
   initDatabase,
+  closeDatabase,
   verifyPassword,
   hasDashboardPassword,
-  isUsingLegacyDefaultPassword,
+  isUsingLegacyPasswordHash,
   setDashboardPassword,
   getBootstrapPasswordFilePath,
   getServerSettings,

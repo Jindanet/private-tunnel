@@ -1,0 +1,30 @@
+# Linux host networking keeps Nginx -> PrivateTunnel on trusted loopback.
+# Do not use bridge networking without implementing an explicit trusted-proxy policy.
+# TCP ports are OS-assigned host listeners: allow each displayed port in external
+# firewalls/NAT after allocation. Static Docker port mappings cannot predict them.
+services:
+  private-tunnel:
+    build: .
+    image: private-tunnel:1.1.0
+    network_mode: host
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      INTERNAL_HOST: 127.0.0.1
+      DATA_DIR: /var/lib/private-tunnel
+      SQLITE_PATH: /var/lib/private-tunnel/tunnel.db
+      AUTO_FIREWALL: "false"
+    volumes:
+      - tunnel-data:/var/lib/private-tunnel
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+
+volumes:
+  tunnel-data:

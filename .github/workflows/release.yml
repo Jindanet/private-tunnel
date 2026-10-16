@@ -1,0 +1,79 @@
+name: Prepare release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# This workflow uploads build artifacts only. It cannot create or publish a GitHub Release.
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Linux renderer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends xvfb xauth libnss3 libatk-bridge2.0-0t64 libgtk-3-0t64 libgbm1 libasound2t64 libcups2t64 libxss1 libxkbcommon0 fonts-noto-core
+      - run: npm ci
+      - run: xvfb-run --auto-servernum npm test
+      - name: Check version and prepare source archive
+        shell: bash
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag must match package.json version v$version" >&2
+            exit 1
+          fi
+          mkdir -p release-artifacts
+          git archive --format=zip --prefix="PrivateTunnel-$version/" --output="release-artifacts/PrivateTunnel-v$version-source.zip" HEAD
+          cp deploy/RELEASE-1.1.0.md release-artifacts/
+          (cd release-artifacts && sha256sum *.zip > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: PrivateTunnel-source
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-desktop:
+    needs: source
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm.cmd run build:app:win -- --publish=never
+      - name: Archive unsigned desktop build
+        shell: pwsh
+        run: |
+          $releaseVersion = node -p "require('./package.json').version"
+          New-Item -ItemType Directory -Path release-artifacts -Force | Out-Null
+          $releaseArchive = "release-artifacts/PrivateTunnel-v$releaseVersion-windows-x64-unsigned.zip"
+          Compress-Archive -Path 'dist-app/win-unpacked/*' -DestinationPath $releaseArchive
+          $releaseHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseArchive).Hash.ToLowerInvariant()
+          "$releaseHash  $(Split-Path -Leaf $releaseArchive)" | Set-Content -Encoding ascii release-artifacts/SHA256SUMS.txt
+          Copy-Item -LiteralPath deploy/RELEASE-1.1.0.md -Destination release-artifacts/
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: PrivateTunnel-windows-x64-unsigned
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 30

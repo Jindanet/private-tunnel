@@ -1,5 +1,6 @@
 const { MSG, FRAME_REQUEST_BODY, generateRequestId, sendControl, sendData } = require('../shared/protocol');
 const { normalizeDomain } = require('./routing');
+const { clientIp } = require('./security');
 
 const REQUEST_TIMEOUT = 30000;
 
@@ -8,8 +9,8 @@ function handleProxy(req, res, publicHost, tunnelManager) {
   const tunnel = tunnelManager.getHttpTunnel(host);
 
   if (!tunnel) {
-    res.writeHead(502, { 'Content-Type': 'text/html' });
-    res.end(`<html><body><h1>502 Bad Gateway</h1><p>Tunnel not found: ${host}</p></body></html>`);
+    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(`Tunnel not found: ${host}`);
     return;
   }
 
@@ -18,15 +19,17 @@ function handleProxy(req, res, publicHost, tunnelManager) {
     res.end('Tunnel client disconnected');
     return;
   }
+  if (tunnel.pendingRequests.size >= 128) {
+    res.writeHead(503, { 'Content-Type': 'text/plain', 'Retry-After': '5' });
+    res.end('This tunnel is busy. Try again shortly.');
+    return;
+  }
 
   const requestId = generateRequestId();
   tunnel.stats.connections++;
 
   // Extract visitor info
-  const visitorIp = req.headers['x-real-ip']
-    || req.headers['cf-connecting-ip']
-    || req.headers['x-forwarded-for']
-    || req.socket.remoteAddress;
+  const visitorIp = clientIp(req);
 
   const timeout = setTimeout(() => {
     if (tunnel.pendingRequests.has(requestId)) {

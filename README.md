@@ -1,356 +1,187 @@
 # PrivateTunnel
 
-Hoster-first self-hosted tunnel platform for HTTP and TCP services.
+แชร์เว็บไซต์หรือบริการจากเครื่องของคุณผ่านเซิร์ฟเวอร์ที่ดูแลเอง รองรับแอปเดสก์ท็อปและคำสั่ง CLI ภาษาไทย/อังกฤษ
 
-PrivateTunnel lets a server owner manage publish domains, admin routes, authentication, request visibility, and client onboarding from one place while keeping the client side short and simple.
+Share a local website or TCP service through a server you control. Version **1.1.0** focuses on a clearer first use and safer defaults. Intended for personal use or a small, trusted team. **Public multi-user hosting is not production ready**; see the limitations below.
+
+## เริ่มใช้งานด้วยแอป / Desktop quick start
+
+ขอข้อมูล 2 อย่างจากผู้ดูแล: **ที่อยู่เซิร์ฟเวอร์** เช่น `admin.example.com` และ **กุญแจเข้าใช้งาน** อย่าส่งกุญแจให้ผู้ชมเว็บไซต์
+
+1. เปิด PrivateTunnel เลือกภาษา กรอกที่อยู่เซิร์ฟเวอร์กับกุญแจ แล้วกด **ตรวจสอบและไปต่อ**
+2. เปิดเว็บไซต์ของคุณในเครื่องก่อน จากนั้นกด **เพิ่มรายการ** เลือก **เว็บไซต์** แล้ววาง `http://localhost:3000` หรือกรอกพอร์ต `3000` และกด **เริ่มแชร์** สำหรับ Minecraft Java ใช้ตัวเลือกเริ่มต้นที่หน้าแรกได้
+3. เมื่อแสดงสถานะ **กำลังแชร์** กด **คัดลอกที่อยู่** เพื่อส่งให้ผู้ชม หรือ **เปิดเว็บ** เพื่อทดสอบ กด **หยุดแชร์** เมื่อใช้งานเสร็จ
+
+Ask the administrator for the server address and access key. Check and save them once, then add a website by pasting its local HTTP address or entering its port. Copy or open the assigned public address when connected. The creation page keeps names and custom-domain options collapsed. Minecraft Java has a quick-start preset. Saving a profile does not guarantee that a later connection will succeed.
+
+![Desktop sharing view](docs/images/desktop-preview.png)
+
+The desktop uses a sidebar on wider windows and compact top navigation on smaller windows. The administrator interface follows the same visual system; server setup guidance appears only when domain settings are incomplete.
+
+Dark mode is the default for the desktop and administrator pages, including login and settings, regardless of the operating system theme.
+
+![Administrator overview](docs/images/admin-preview.png)
+
+พอร์ตคือเลขท้ายที่อยู่เว็บไซต์ในเครื่อง เช่น `localhost:3000` ใช้พอร์ต `3000` ส่วน TCP ใช้กับบริการ เช่น เกมหรือ SSH และที่อยู่ที่ได้เป็น `host:port` ซึ่งต้องเปิดผ่านแอปของบริการนั้น
+
+สำหรับ TCP เซิร์ฟเวอร์จะเลือกพอร์ตสาธารณะให้อัตโนมัติ ใช้ที่อยู่ล่าสุดที่แอปแสดง และให้ผู้ดูแลเปิดพอร์ตนั้นในไฟร์วอลล์หรือเราเตอร์ก่อนเชื่อมต่อจากภายนอก
+
+To run the desktop from source, install Node.js **22.12+** and run in this folder:
+
+```powershell
+npm ci
+npm run app
+```
+
+The Windows build is currently an **unsigned development build**. Code signing, notarization and automatic updates are not configured. Only use artifacts from a source you trust; a checksum does not prove the publisher's identity.
+
+## ใช้ผ่านคำสั่ง / CLI in two steps
+
+Use the included CLI directly to avoid confusion with unrelated programs also named `ptunnel`:
 
 ```bash
-# First-time client setup
-ptunnel init --server wss://ex.example.com/_private-tunnel/ws --token YOUR_TOKEN
+# 1. Save the server profile once (replace the example address and key).
+node client/bin/ptunnel.js init --server wss://admin.example.com/_private-tunnel/ws --token YOUR_ACCESS_KEY
 
-# After that, daily usage stays short
-ptunnel http 3000
-ptunnel tcp 25565
-ptunnel http 3000 --domain app.ex.example.com
-ptunnel http 3000 --domain demo.ex.example.com --root
+# 2. Start sharing your running local website.
+node client/bin/ptunnel.js http 3000
 ```
 
-## What Changed
-
-This project now includes:
-
-- Hoster-first server settings stored in the database, seeded from `.env` on first boot
-- Multiple publish domains per server, each with independent `subdomain` and `root` publishing flags
-- Dedicated control namespace under `/_private-tunnel/*` so normal site routes and `/api` do not collide with the tunnel system
-- Bilingual admin/dashboard UI with English as the primary language and Thai as an optional switch
-- Bilingual desktop GUI client with clearer onboarding copy and mandatory saved server profile
-- Safer admin bootstrap behavior: if `DASHBOARD_PASSWORD` is empty, a random bootstrap password is generated and written under `DATA_DIR`
-- Dual database support: SQLite, MySQL, or both with optional mirror sync
-- Remembered custom host labels for HTTP tunnels, plus server-side availability checking before the tunnel starts
-- Updated client onboarding flow so users save `--server` and `--token` once instead of repeating them on every command
-
-## Architecture
-
-PrivateTunnel uses three internal ports:
-
-- `WS_PORT` for tunnel client WebSocket connections
-- `DASHBOARD_PORT` for the admin UI and admin API
-- `PROXY_PORT` for public HTTP tunnel traffic
-
-Recommended external layout behind Nginx:
-
-```text
-Internet
-  |
-  +-- https://ex.example.com/_private-tunnel/admin   -> Dashboard
-  +-- wss://ex.example.com/_private-tunnel/ws        -> Tunnel client WebSocket
-  +-- https://*.app.ex.example.com                   -> HTTP tunnels
-  +-- https://demo.ex.example.com                    -> Optional exact-root HTTP tunnels
-  +-- tcp://games.ex.example.com:30001+             -> TCP tunnels (direct, not through Nginx)
-```
-
-Control-plane routes are isolated under `/_private-tunnel`:
-
-- Admin UI: `/_private-tunnel/admin`
-- Admin API: `/_private-tunnel/admin/api/*`
-- Admin live updates: `/_private-tunnel/admin/live`
-- Client WebSocket: `/_private-tunnel/ws`
-
-The legacy client WebSocket path `/ws` is still accepted by the server for compatibility, but all current examples use `/_private-tunnel/ws`.
-
-## Project Structure
-
-```text
-PrivateTunnel/
-├── app/                    # Electron desktop client
-├── client/                 # CLI client and tunnel runtime
-├── server/                 # Server, dashboard, routing, database
-├── shared/                 # Wire protocol
-├── data/                   # Runtime data (gitignored)
-├── .env.example
-├── package.json
-└── README.md
-```
-
-Important server files:
-
-- `server/index.js`: boots WebSocket, dashboard, and proxy services
-- `server/dashboard.js`: admin UI, admin API, snippets, bilingual dashboard
-- `server/db.js`: SQLite/MySQL storage and config bootstrap logic
-- `server/routing.js`: route/domain normalization and runtime route generation
-- `server/tunnel-manager.js`: tunnel assignment, remembered host logic, preview validation
-
-Important client files:
-
-- `client/bin/ptunnel.js`: CLI onboarding and tunnel commands
-- `client/tunnel-client.js`: runtime client for HTTP and TCP tunnels
-- `client/server-url.js`: default control path normalization
-- `app/main.js`: desktop app main process and secure IPC bridge
-- `app/renderer/*`: bilingual desktop UI
-
-## Requirements
-
-- Node.js 18+
-- npm
-- Nginx on the server
-- One or more domains pointed at the server
-- TLS certificates for the domains you publish
-- MySQL if you want MySQL as the primary backend
-
-## Installation
+Other commands:
 
 ```bash
-git clone https://github.com/Jindanet/private-tunnel.git
-cd private-tunnel
-npm install
+node client/bin/ptunnel.js tcp 25565
+node client/bin/ptunnel.js status
+node client/bin/ptunnel.js reset
+node client/bin/ptunnel.js http 3000 --domain apps.example.com
+node client/bin/ptunnel.js http 3000 --domain demo.example.net --root
 ```
 
-Optional global CLI install:
+`--server` and `--token` belong to setup; do not combine them with a tunnel command. `npm link` optionally installs the short `ptunnel` command; check for a conflicting installation first. Profiles are stored in `~/.ptunnel` (Windows: `%USERPROFILE%\.ptunnel`). This file contains the access key. POSIX permissions are set to `0600`; restrict the user's Windows profile ACL too. Passing the key on the CLI can also leave it in shell history.
 
-```bash
-npm link
-```
+## เมื่อติดปัญหา / Common problems
 
-Start the server:
+| What you see | What to do |
+| --- | --- |
+| No server profile | Ask the administrator for the server address and access key, then save them. |
+| Authentication failed | Copy the current access key again; a rotated key invalidates the old one. |
+| Connection failed / reconnecting | Check internet access and the server address. Ask the administrator to check DNS, TLS and the server. |
+| Local service unavailable / 502 | Open `http://localhost:PORT` locally first and check the port in the sharing profile. |
+| Share address is `host:port` | This is TCP. Copy it into the game/SSH/service client; it is not a website URL. |
+| HMR, Socket.IO or app WebSockets do not connect | Application WebSocket upgrade passthrough is not supported. Use a normal HTTP workflow. |
 
-```bash
-node server/index.js
-```
+## สำหรับผู้ดูแล / Set up a server
 
-For TCP tunnel firewall automation, run with elevated privileges:
+You need Node.js 22.12+, a server, DNS access, Nginx and TLS certificates. The default storage is SQLite; MySQL is optional. The application does not configure your DNS, certificates or Nginx automatically.
 
-- Windows: run as Administrator
-- Linux/macOS: run with `sudo`
+1. Install dependencies with `npm ci`. Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell, `cp .env.example .env` on Linux).
+2. Set `PRIMARY_DOMAIN` to the exact admin hostname and `TUNNEL_DOMAIN` to the public website domain. For example, `admin.example.com` and `apps.example.com`. Keep the internal bind address `127.0.0.1` and `AUTO_FIREWALL=false`.
+3. Start with `npm run server` as a regular service user. On first boot, an empty access key generates a random 32-byte key stored in the database. If supplying your own key, generate a cryptographically random secret that meets the requirements below. An empty admin password generates `<DATA_DIR>/admin-bootstrap.txt`. Protect this file and the data directory.
+4. Configure Nginx, DNS and certificates using [the deployment guide](deploy/README.md) and [the Nginx template](deploy/nginx.example.conf). Check with `nginx -t` before reloading.
+5. Open `https://admin.example.com/_private-tunnel/admin`, sign in using the bootstrap password, and change it. Rotation removes the bootstrap file and invalidates current sessions. Copy the server address and access key from Settings to onboard users.
 
-## Environment Variables
+The three internal ports must remain private:
 
-The server reads `.env` on startup, then stores hoster settings in the database. On first boot, `.env` seeds the database. After that, the admin UI becomes the main place to manage domains, control route, and tunnel token.
-
-### Core network settings
-
-| Variable | Default | Description |
+| Port | Purpose | External route |
 | --- | --- | --- |
-| `WS_PORT` | `8080` | Internal WebSocket server port for tunnel clients |
-| `DASHBOARD_PORT` | `8081` | Internal dashboard/admin API port |
-| `PROXY_PORT` | `8082` | Internal public HTTP proxy port |
-| `PRIMARY_DOMAIN` | empty | Main control-plane domain for the admin UI and default client WebSocket |
-| `TUNNEL_DOMAIN` | empty | Optional legacy/default publish domain used during initial bootstrap |
-| `TUNNEL_TOKEN` | empty | Client access secret. Leave empty only for fully open/private test setups |
-| `DASHBOARD_PASSWORD` | empty | Optional explicit admin password. If empty, a random bootstrap password is generated |
-| `DATA_DIR` | `./data` | Runtime data directory |
-| `TCP_PORT_MIN` | `30000` | First TCP tunnel port |
-| `TCP_PORT_MAX` | `40000` | Last TCP tunnel port |
+| 8080 | Client WebSocket | Exact admin host + `/_private-tunnel/ws` |
+| 8081 | Dashboard and admin API | Exact admin host + `/_private-tunnel/admin` |
+| 8082 | Published HTTP requests | Configured publish hosts |
 
-### Database settings
+For each TCP tunnel, the server's operating system selects an available public port. Use the assigned `host:port` displayed in the client or dashboard; it can change after reconnecting or restarting the server. The administrator must allow that specific port in host/cloud firewalls and set up NAT forwarding where applicable. With the default `AUTO_FIREWALL=false`, PrivateTunnel does not create firewall rules. There is no configured public TCP port range. Run the process without root or Administrator privileges.
 
-| Variable | Default | Description |
+`GET http://127.0.0.1:8081/healthz` is a local liveness probe. It does not confirm that DNS, TLS, a database mirror, public tunnels or clients are healthy. SIGINT/SIGTERM closes listeners and active tunnels; existing streams are interrupted, not drained to completion.
+
+### Domains and Nginx
+
+Keep the exact admin host in its own TLS server block. Every published host, including a wildcard under the primary domain, must reject the exact control root and its child paths. The generated template uses both `location = /_private-tunnel` and `location ^~ /_private-tunnel/` for that boundary.
+
+The admin host routes only admin and client WebSocket paths. Public application traffic goes to the proxy port. `/_private-tunnel` is reserved, so a published application cannot use it. `/api` remains available to the application. The legacy `/ws` endpoint still exists on the admin host; current clients use the control namespace.
+
+Publish domains can permit immediate subdomains, the exact root host, or both. Root publishing on the primary admin host is disabled. DNS wildcard records and wildcard certificates are separate requirements. Wildcard TLS certificates require DNS-01 validation; a wildcard certificate does not cover the bare domain. See [Let's Encrypt challenge documentation](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge).
+
+Nginx examples assume it runs on the same host as PrivateTunnel. The server trusts forwarded IP/protocol headers only from loopback connections. Do not expose internal listeners or move the proxy behind a bridge without designing and testing an explicit trusted-proxy configuration.
+
+### Configuration reference
+
+`.env` seeds domains, access key and admin password into the database on first boot. The control root initially uses `/_private-tunnel`; it is not seeded from `.env`. **After that, stored settings take precedence.** Change those settings in the dashboard. Listener ports, bind address and database options are startup settings and require a restart.
+
+Any supplied access key must contain 32–4096 visible ASCII characters without whitespace. Keys beginning with `your-`, `your_`, `replace-`, `replace_`, `change-`, `change_`, `example-` or `example_` are rejected, ignoring case. Use a cryptographically random key; passing the format and length checks does not establish entropy. An invalid nonempty `TUNNEL_TOKEN` prevents startup, even if a stored key exists. An invalid legacy stored key leaves administrator sign-in available, but tunnel authentication is denied until the key is rotated; Settings cannot be saved while retaining that key.
+
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `DB_PROVIDER` | `mysql` | Primary backend: `mysql` or `sqlite` |
-| `DB_SYNC_TARGETS` | empty | Optional mirror backends, comma-separated, for example `sqlite` or `mysql,sqlite` |
-| `DB_SYNC_STRICT` | `false` | When `true`, mirror write failures also fail the main request |
-| `DB_BOOTSTRAP_SYNC` | `true` | Auto-seed empty backends from the first backend that already has data |
-| `SQLITE_PATH` | `./data/tunnel.db` | SQLite file path |
-| `MYSQL_HOST` | `127.0.0.1` | MySQL host |
-| `MYSQL_PORT` | `3306` | MySQL port |
-| `MYSQL_USER` | `privatetunnel` in `.env.example` | MySQL username |
-| `MYSQL_PASSWORD` | empty | MySQL password |
-| `MYSQL_DATABASE` | `privatetunnel` | Database name |
-| `DB_PATH` | alias | Backward-compatible alias for old SQLite-only installs |
+| `INTERNAL_HOST` | `127.0.0.1` | Internal listener address |
+| `WS_PORT`, `DASHBOARD_PORT`, `PROXY_PORT` | `8080`, `8081`, `8082` | Internal ports |
+| `PRIMARY_DOMAIN`, `TUNNEL_DOMAIN` | empty | First-boot admin and publish domains |
+| `TUNNEL_TOKEN` | generated on first boot | Shared client access key; supplied values must meet the requirements above |
+| `DASHBOARD_PASSWORD` | generated on first boot | Admin bootstrap password |
+| `DATA_DIR` | `./data` | Private runtime files |
+| `AUTO_FIREWALL` | `false` | Optional legacy privileged firewall automation |
+| `ALLOW_LEGACY_QUERY_TOKEN` | `false` | Temporary compatibility for old query-token clients |
+| `ALLOW_UNAUTHENTICATED_TUNNELS` | `false` | Explicit opt-in to unauthenticated test tunnels |
+| `REQUEST_LOGGING` | `true` | Record new request metadata; set `false` to disable |
+| `DB_PROVIDER` | `sqlite` | Primary backend: `sqlite` or `mysql` |
+| `SQLITE_PATH` | `<DATA_DIR>/tunnel.db` | SQLite database; explicit path takes precedence over `DATA_DIR`; legacy alias `DB_PATH` |
+| `DB_SYNC_TARGETS` | empty | Optional comma-separated mirror backends |
+| `DB_SYNC_STRICT` | `false` | Make mirror write errors fail the operation |
+| `DB_BOOTSTRAP_SYNC` | `false` | Optional automatic seed into an empty backend |
 
-### Example `.env`
+For MySQL, set `MYSQL_HOST`, `MYSQL_PORT` (3306), `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE`. Use a dedicated database user. Schema setup may create the database if the account permits it; pre-create the database if you do not grant that permission.
 
-```env
-WS_PORT=8080
-DASHBOARD_PORT=8081
-PROXY_PORT=8082
+Changing `DATA_DIR` does not relocate an explicitly configured `SQLITE_PATH` (or legacy `DB_PATH`). The example environment file sets both paths; update both when moving SQLite state.
 
-PRIMARY_DOMAIN=ex.example.com
-TUNNEL_DOMAIN=tunnel.ex.example.com
-TUNNEL_TOKEN=replace-with-a-real-secret
-DASHBOARD_PASSWORD=
+### Storage, backup and migration
 
-DB_PROVIDER=mysql
-DB_SYNC_TARGETS=sqlite
-DB_SYNC_STRICT=false
-DB_BOOTSTRAP_SYNC=true
+Prefer one backend with scheduled, tested backups. The optional MySQL/SQLite mirror feature remains available for existing deployments. It is **not** an automatic failover system or a backup. With `DB_SYNC_STRICT=false`, mirror errors are logged but writes may diverge. Strict mode cannot make a cross-database write atomic. Bootstrap copying is disabled unless explicitly enabled.
 
-SQLITE_PATH=./data/tunnel.db
-MYSQL_HOST=127.0.0.1
-MYSQL_PORT=3306
-MYSQL_USER=privatetunnel
-MYSQL_PASSWORD=change-me
-MYSQL_DATABASE=privatetunnel
-```
+For a planned migration, stop the service, back up every source and destination, configure the intended backend and empty target, then enable bootstrap sync only for the migration. Verify the resulting settings, clients and logs before disabling sync and resuming use. Never point it at an unrelated database. Schema changes run automatically at startup; versioned migration rollback is not implemented. Restore a matching pre-upgrade database and application version to roll back.
 
-## Database Modes
+## Upgrade from 1.0 to 1.1
 
-PrivateTunnel supports three practical setups:
+Back up `.env`, the database(s), data directory and client profiles before upgrading. Test the upgrade separately before using your live database.
 
-### 1. SQLite only
+- **Existing MySQL users must explicitly set `DB_PROVIDER=mysql` before upgrading if they relied on the old default.** The new default is SQLite; an omitted value can otherwise start a separate empty database.
+- Mirror targets are now empty by default and `DB_BOOTSTRAP_SYNC` defaults to false. Existing explicit environment values still apply. Review them before startup.
+- Internal listeners now bind to `127.0.0.1`. Put Nginx on the same host. Do not expose these ports to restore the old behavior.
+- Remove obsolete `TCP_PORT_MIN` and `TCP_PORT_MAX` environment entries. Public TCP ports are now selected by the operating system; check the displayed address and update firewall/NAT rules after each allocation.
+- Update clients: the access key now travels in `Authorization: Bearer ...`, not the WebSocket URL. Old query-token clients need the temporary `ALLOW_LEGACY_QUERY_TOKEN=true` switch. Disable it after updating clients and rotate any key that may be present in logs.
+- Missing access keys no longer mean an open server. A first boot with no stored key generates one; unauthenticated mode requires explicit opt-in.
+- Review access keys before restarting: nonempty environment keys must meet the 32–4096 visible-ASCII format and placeholder-prefix rules above or startup fails. Existing invalid stored keys keep administrator sign-in available but deny tunnel authentication; rotate the key in Settings before saving, then update all clients. Use a random key rather than extending a memorable password to the minimum length. Existing stored settings still take precedence over valid `.env` values.
+- Re-generate Nginx snippets and review every publish host. The exact admin host and wildcard publish hosts must use separate TLS blocks.
+- Legacy password hashes migrate to salted scrypt after a successful login. Change the admin password afterward and protect database backups.
 
-```env
-DB_PROVIDER=sqlite
-DB_SYNC_TARGETS=
-```
+Protocol version 1 is declared in the shared protocol and current clients identify it during setup. Explicitly incompatible versions are rejected. Legacy clients without a version remain accepted for migration; this is not a general protocol negotiation system.
 
-Good for small single-host setups.
+## Security and current limitations
 
-### 2. MySQL only
+This release improves several boundaries; it does not make an untrusted public hosting service safe. Before broader use, the project still needs independent review, load testing and operational design.
 
-```env
-DB_PROVIDER=mysql
-DB_SYNC_TARGETS=
-```
+- **Shared key and client identities:** all clients use one key. There is no per-client key, expiration, scope or revoke. A client-supplied ID and remembered hostname are not an authenticated tenant identity. Do not mix mutually untrusted users.
+- **Public services:** anyone who can reach a published HTTP/TCP endpoint can access it unless the local application implements authentication. Public TCP has no built-in TLS or visitor access control. TLS on the control connection does not encrypt the visitor-to-public-TCP leg.
+- **Transport and privacy:** Nginx terminates HTTPS and the server can read traffic. There is no end-to-end encryption through the server. CLI profiles and server database settings contain plaintext access keys; protect files and backups.
+- **Request metadata:** stored paths/referrers omit URL queries/fragments and HTTP URL credentials. Full request headers and bodies are not persisted by this logger. Metadata can still contain private path segments, visitor IPs and user agents. Retention is seven days with periodic cleanup; `REQUEST_LOGGING=false` disables new metadata logs. Older rows and backups are not retroactively redacted, and your Nginx/application logs have separate privacy settings.
+- **Compatibility:** UDP and application WebSocket upgrade passthrough are not implemented. HTTP requests time out after about 30 seconds. A long-running upload or streaming response can be interrupted.
+- **Capacity and availability:** bounded buffers, connection limits and timeouts reduce obvious resource abuse. Per-user bandwidth quotas, public abuse handling, HA, horizontal scaling and Prometheus metrics are not implemented. Tunnel/session state is local to one process. Reconnect cannot resume an interrupted TCP stream.
+- **Administration:** one administrator password, no accounts/RBAC, MFA or durable security audit trail. Liveness is not an end-to-end availability guarantee.
+- **Authentication limits:** a pre-authentication per-IP limit of 60 WebSocket upgrade attempts per minute covers both tunnel routes and administrator live updates, independently of HTTP administrator-login throttling. Shared proxy addresses can therefore share an allowance.
+- **Release trust:** desktop signing, notarization and automatic updates are not configured. The artifact workflow prepares unsigned Windows files and source archives; it does not publish a GitHub Release.
 
-Recommended for production and larger installs.
+### Vulnerability reports
 
-### 3. MySQL primary with SQLite mirror
+Use the repository's private **Security → Report a vulnerability** channel if the owner has enabled private vulnerability reporting. Otherwise contact the repository owner privately using a contact method they have published. No dedicated security inbox or response-time SLA is currently published. Do not put active access keys, customer traffic, database files or a working exploit against a live server in a public issue. Include the affected version, deployment layout, expected behavior, observed impact and a minimal reproduction in a controlled environment. Known limitations above are not a waiver of security findings.
 
-```env
-DB_PROVIDER=mysql
-DB_SYNC_TARGETS=sqlite
-DB_BOOTSTRAP_SYNC=true
-```
-
-Useful during migration or when you want a local mirror.
-
-### Migration notes
-
-- Schema creation is automatic on startup for both backends.
-- Missing columns and indexes are added automatically.
-- Empty backends can be bootstrapped from a backend that already has data when `DB_BOOTSTRAP_SYNC=true`.
-- This means older SQLite installs can be moved toward MySQL without a separate manual migration script, as long as both backends are configured and the server is started with sync enabled.
-
-## First Boot
-
-On first startup:
-
-1. The configured database schema is created or upgraded.
-2. `PRIMARY_DOMAIN`, `TUNNEL_DOMAIN`, `TUNNEL_TOKEN`, and the default control root are seeded into the database if missing.
-3. If `DASHBOARD_PASSWORD` is set, it is hashed and stored.
-4. If `DASHBOARD_PASSWORD` is empty, PrivateTunnel generates a random bootstrap password and writes it to:
-
-```text
-<DATA_DIR>/admin-bootstrap.txt
-```
-
-Rotate that password from the admin UI after the first successful login.
-
-## Admin Dashboard
-
-Default admin URL:
-
-```text
-https://ex.example.com/_private-tunnel/admin
-```
-
-The dashboard is designed for the server owner, not tunnel end-users.
-
-What the dashboard manages:
-
-- Primary domain and control namespace
-- Tunnel token
-- Publish domains
-- Admin password rotation
-- Active tunnels
-- Known clients
-- Recent request logs
-- Generated DNS/client/Nginx snippets
-
-### Publish domains
-
-Each publish domain can independently allow:
-
-- Random or remembered subdomains
-- Exact root publishing
-
-Examples:
-
-- `app.ex.example.com` with `allowSubdomain=true`, `allowRoot=false`
-- `demo.ex.example.com` with `allowSubdomain=true`, `allowRoot=true`
-- `games.ex.example.com` for TCP address branding
-
-The primary control-plane domain root is reserved for the admin/control plane. Root publishing on the primary domain is automatically disabled.
-
-### Dashboard API
-
-Key endpoints:
-
-- `GET /_private-tunnel/admin/api/overview`
-- `GET /_private-tunnel/admin/api/clients`
-- `GET /_private-tunnel/admin/api/logs`
-- `POST /_private-tunnel/admin/api/settings`
-- `POST /_private-tunnel/admin/api/password`
-
-These live under the admin namespace so they do not collide with your public website `/api` routes.
-
-## Client CLI
-
-The CLI now uses a two-step onboarding flow.
-
-### Step 1. Save the server profile once
+## Development, tests and builds
 
 ```bash
-ptunnel init --server wss://ex.example.com/_private-tunnel/ws --token YOUR_TOKEN
+npm ci
+npm test
+npm run app
+npm run server
 ```
 
-Equivalent setup form:
+The Node test runner covers binary protocol parsing/backpressure, domain/control routing, Nginx host separation, authentication and additional runtime regressions. It also launches the installed Electron binary for renderer integration against a local test fixture. `npm test` automatically installs Electron first through its pretest step, avoiding concurrent binary downloads on a fresh checkout. Do not skip the Electron download for tests. CI runs the suite on Ubuntu 24.04 and Windows with Node 22 and 24. Linux without a display needs the Electron runtime libraries and `xvfb-run --auto-servernum npm test`; see the CI workflow's dependency list. A passing suite is not a penetration test or load test.
 
-```bash
-ptunnel --server wss://ex.example.com/_private-tunnel/ws --token YOUR_TOKEN
-```
-
-This stores the server URL and token in the client config file:
-
-```text
-~/.ptunnel
-```
-
-Useful commands:
-
-```bash
-ptunnel status
-ptunnel reset
-```
-
-### Step 2. Use short tunnel commands
-
-```bash
-ptunnel http 3000
-ptunnel tcp 25565
-ptunnel 8080
-```
-
-Optional publish-domain flags:
-
-```bash
-ptunnel http 3000 --domain app.ex.example.com
-ptunnel http 3000 --domain demo.ex.example.com --root
-```
-
-Important behavior:
-
-- `--server` and `--token` are now setup-only inputs
-- The CLI refuses to mix `--server` or `--token` with a tunnel command in the same call
-- The server profile must exist before a tunnel can start
-- The saved profile is normalized to the default `/_private-tunnel/ws` path if you provide only a hostname
-
-## Desktop GUI
-
-The desktop app is the friendliest client for non-technical users.
-
-Current desktop app behavior:
-
-- Requires a saved server profile before any tunnel can be created
-- Bilingual UI with English as the default language and Thai as an optional switch
-- Clear setup screen for server WebSocket URL and token
-- Reusable tunnel profiles for HTTP and TCP
-- Optional publish domain selection
-- Optional remembered custom host label with server-side availability checking
-- One-click start and stop
-- Per-tunnel recent activity preview
-
-Build the desktop app:
+Desktop builds:
 
 ```bash
 npm run build:app:win
@@ -358,249 +189,8 @@ npm run build:app:linux
 npm run build:app:mac
 ```
 
-Run in development:
+Build on the corresponding operating system. Windows output is `dist-app/win-unpacked/PrivateTunnel.exe`; distribute the complete folder, not the executable alone. The Windows target deliberately prepares an unsigned development directory. Close running copies before rebuilding if Windows reports a locked file. Do not work around a locked native module by deleting arbitrary files from an active install.
 
-```bash
-npm run app
-```
+CLI build commands are `npm run build:win`, `npm run build:linux` and `npm run build:macos`. Desktop native module packaging and signing need validation on each target platform before a public release.
 
-### Troubleshooting Build Errors
-
-If you encounter errors during the build process, follow these steps:
-
-#### 1. Native Module Build Error (EPERM)
-
-If you see an error like:
-```
-⨯ [Error: EPERM: operation not permitted, unlink '...\better-sqlite3\build\Release\better_sqlite3.node']
-```
-
-**Solution:**
-```bash
-# Remove the locked file
-rm -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
-
-# Try building again
-npm run build:app:win
-```
-
-#### 2. Code Signing Tools Error (Symbolic Links)
-
-If you see errors about creating symbolic links during code signing:
-```
-ERROR: Cannot create symbolic link : A required privilege is not held by the client
-```
-
-**Solution:**
-```bash
-# The app actually built successfully! The error only affects the final ZIP creation.
-# Your unpacked app is available at: dist-app/win-unpacked/PrivateTunnel.exe
-
-# Create the distribution ZIP manually:
-cd dist-app
-powershell Compress-Archive -Path "win-unpacked\*" -DestinationPath "PrivateTunnel-win-x64.zip" -Force
-
-# Your distribution is ready at: dist-app/PrivateTunnel-win-x64.zip
-```
-
-#### 3. Alternative: Build without Code Signing
-
-To avoid code signing errors entirely, you can disable signing in `package.json`:
-
-```json
-"win": {
-  "target": [{"target": "zip", "arch": ["x64"]}],
-  "signingHashAlgorithms": [],
-  "sign": null
-}
-```
-
-Then build normally and manually create the ZIP if needed.
-
-#### 4. Run as Administrator (Windows)
-
-For persistent build issues, try running your terminal as Administrator before building.
-
-## Nginx Setup
-
-PrivateTunnel no longer tries to manage Nginx for you. Instead, the dashboard provides setup guidance and examples. This keeps the app from rewriting unrelated Nginx configuration on the host.
-
-The key rule is:
-
-- Reserve `/_private-tunnel/*` for the control plane
-- Send all normal public tunnel traffic to the proxy server
-- Keep your site-specific SSL includes under your own Nginx layout
-
-### Why the dedicated control namespace matters
-
-Older `/api` or `/dashboard` style paths can collide with real applications behind the tunnel. Using `/_private-tunnel/*` avoids that conflict.
-
-### Example 1. Control plane + subdomain publishing
-
-```nginx
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-
-server {
-    listen 80;
-    server_name ex.example.com *.app.ex.example.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name ex.example.com *.app.ex.example.com;
-
-    include C:/path/to/your-own-ssl/ex.example.com.conf;
-
-    location ^~ /_private-tunnel/ {
-        proxy_pass http://127.0.0.1:8081;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-    }
-
-    location = /_private-tunnel/ws {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 86400;
-        proxy_send_timeout 86400;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:8082;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_buffering off;
-        proxy_request_buffering off;
-    }
-}
-```
-
-### Example 2. Exact root publish domain
-
-This is for a domain that should publish directly at the root, such as `demo.ex.example.com`.
-
-```nginx
-server {
-    listen 80;
-    server_name demo.ex.example.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name demo.ex.example.com;
-
-    include C:/path/to/your-own-ssl/demo.ex.example.com.conf;
-
-    location / {
-        proxy_pass http://127.0.0.1:8082;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_buffering off;
-        proxy_request_buffering off;
-    }
-}
-```
-
-### Example 3. TCP publishing
-
-TCP tunnels do not pass through Nginx. The server returns addresses like:
-
-```text
-games.ex.example.com:30001
-games.ex.example.com:30002
-```
-
-Open the configured TCP port range on your firewall.
-
-## DNS and TLS
-
-Suggested DNS records:
-
-```text
-A     ex.example.com           -> <your-server-ip>
-A     *.app.ex.example.com     -> <your-server-ip>
-A     demo.ex.example.com      -> <your-server-ip>
-A     games.ex.example.com     -> <your-server-ip>
-```
-
-### Win-acme workflow on Windows
-
-If you manage certificates with win-acme:
-
-1. Run `wacs.exe`
-2. Create certificates for each hostname or wildcard you plan to publish
-3. Export PEM files
-4. Keep your own SSL include files per domain
-5. Reference those include files from your Nginx vhosts
-
-PrivateTunnel only generates guidance and examples. It does not replace your existing SSL include layout.
-
-## Security Notes
-
-- Always set a strong `TUNNEL_TOKEN`
-- Rotate the bootstrap admin password after first login
-- Keep the admin UI behind TLS
-- Do not publish the control-plane namespace through unrelated reverse proxies
-- Root publishing on the primary control domain is intentionally blocked
-
-## Wire Protocol
-
-Control messages are JSON text frames over one WebSocket per client. Binary frames carry HTTP body chunks or TCP stream data.
-
-Main message families:
-
-- `tunnel:open`
-- `tunnel:assigned`
-- `tunnel:check`
-- `tunnel:check-result`
-- `request:start`
-- `response:start`
-- `stream:end`
-- `stream:error`
-- `tcp:connect`
-- `tcp:close`
-- `ping`
-- `pong`
-
-See `shared/protocol.js` for the canonical message list.
-
-## Development Scripts
-
-```bash
-npm run server
-npm run client
-npm run app
-npm run build:win
-npm run build:linux
-npm run build:macos
-npm run build:app:win
-```
-
-## License
-
-MIT
+See [release notes and preparation](deploy/RELEASE-1.1.0.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), and [MIT license](LICENSE). The version and workflows in this checkout do not imply that a remote tag or release has been published.
