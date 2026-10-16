@@ -37,7 +37,7 @@ jobs:
           fi
           mkdir -p release-artifacts
           git archive --format=zip --prefix="PrivateTunnel-$version/" --output="release-artifacts/PrivateTunnel-v$version-source.zip" HEAD
-          cp deploy/RELEASE-1.1.0.md release-artifacts/
+          cp "deploy/RELEASE-$version.md" release-artifacts/
           (cd release-artifacts && sha256sum *.zip > SHA256SUMS.txt)
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -70,7 +70,7 @@ jobs:
           Compress-Archive -Path 'dist-app/win-unpacked/*' -DestinationPath $releaseArchive
           $releaseHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseArchive).Hash.ToLowerInvariant()
           "$releaseHash  $(Split-Path -Leaf $releaseArchive)" | Set-Content -Encoding ascii release-artifacts/SHA256SUMS.txt
-          Copy-Item -LiteralPath deploy/RELEASE-1.1.0.md -Destination release-artifacts/
+          Copy-Item -LiteralPath "deploy/RELEASE-$releaseVersion.md" -Destination release-artifacts/
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: PrivateTunnel-windows-x64-unsigned
