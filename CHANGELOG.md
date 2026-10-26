@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add a standalone `ptunnel.js` client for Termux and Node.js 22.12+. Bundle the WebSocket client and MIT notices so users can run it after `pkg install nodejs-lts git -y`, without npm, native compilation, Electron or SQLite.
+- Guide first-time users through server, hidden access-key, HTTP/TCP and local-target setup. Save a private profile, resume the most recent tunnel with `node ptunnel.js`, and provide setup, status and reset commands.
+- Use readable mobile terminal logs with copyable public addresses, visible connection errors and bounded shutdown. Keep credentials in the Authorization header and require TLS for remote servers.
+- Document a one-line Termux install/start command, Android background limitations and bundle maintenance. Check generated-client freshness in CI and release builds, and test standalone HTTP/TCP forwarding without installed dependencies.
+
 ## 1.2.2 — 2026-10-16
 
 - Default public TCP allocation to 30000–40000, skipping occupied or OS-reserved ports while keeping the actual listener bound. Explicitly approved fallback ports are tried in 40001–65535, then 1024–29999; privileged and OS-selected ports are excluded.

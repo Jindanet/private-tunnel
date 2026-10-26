@@ -35,6 +35,45 @@ npm run app
 
 The Windows build is currently an **unsigned development build**. Code signing, notarization and automatic updates are not configured. Only use artifacts from a source you trust; a checksum does not prove the publisher's identity.
 
+## Termux: ติดตั้งแล้วรันด้วย `node ptunnel.js`
+
+ติดตั้งครั้งแรกด้วยคำสั่งบรรทัดเดียวใน Termux (ดาวน์โหลดไว้ใน `$HOME/private-tunnel` แล้วเปิดหน้าตั้งค่า):
+
+```bash
+pkg update -y && pkg install nodejs-lts git -y && git clone --depth 1 https://github.com/Jindanet/private-tunnel.git "$HOME/private-tunnel" && cd "$HOME/private-tunnel" && node ptunnel.js
+```
+
+หรือรันแยกทีละคำสั่งในโฟลเดอร์ส่วนตัวของ Termux (`$HOME`):
+
+```bash
+pkg install nodejs-lts git -y
+cd "$HOME"
+git clone https://github.com/Jindanet/private-tunnel.git
+cd private-tunnel
+node ptunnel.js
+```
+
+ครั้งแรก โปรแกรมจะถาม **ที่อยู่เซิร์ฟเวอร์ → กุญแจเข้าใช้งาน → HTTP หรือ TCP → พอร์ตในเครื่อง** แล้วเริ่มแชร์ทันที ขอที่อยู่และกุญแจจากผู้ดูแลก่อนเริ่ม กรอกที่อยู่เป็น `admin.example.com` ได้เลย โปรแกรมจะใช้ `wss://` และเติม `/_private-tunnel/ws` ให้อัตโนมัติ หากผู้ดูแลเปลี่ยน path ให้ใช้ URL เต็มที่ผู้ดูแลส่งให้ กุญแจจะไม่แสดงขณะพิมพ์และไม่ถูกใส่ใน URL
+
+เปิดบริการในเครื่องก่อน เช่น เว็บที่พอร์ต `3000` หรือ Minecraft Java ที่ `25565` จากนั้นคัดลอก **Public address** ที่โปรแกรมแสดง หน้าจอแสดงบันทึกทีละบรรทัด เหมาะกับจอมือถือ และเชื่อมต่อใหม่อัตโนมัติเมื่อเครือข่ายหลุด กด **Ctrl+C** เพื่อหยุด
+
+ครั้งถัดไปใช้ `node ptunnel.js` เพื่อเปิด tunnel ล่าสุดได้เลย ค่าถูกบันทึกใน `~/.ptunnel` ซึ่งมีกุญแจแบบข้อความและใช้สิทธิ์ `0600` บน Termux อย่าแชร์ไฟล์นี้ การเปลี่ยนเซิร์ฟเวอร์หรือกุญแจใช้ `setup`:
+
+```bash
+node ptunnel.js setup          # เปลี่ยนค่าที่บันทึก แล้วใช้ node ptunnel.js เพื่อเริ่ม
+node ptunnel.js http 3000      # เลือกเว็บและบันทึกเป็นรายการล่าสุด
+node ptunnel.js tcp 25565      # เลือก TCP และบันทึกเป็นรายการล่าสุด
+node ptunnel.js status        # ดูค่าโดยไม่แสดงกุญแจ
+node ptunnel.js reset         # ล้างเซิร์ฟเวอร์ กุญแจ และรายการล่าสุด
+node ptunnel.js --help
+```
+
+`ptunnel.js` รวมโค้ด client และ WebSocket ที่ต้องใช้ไว้ในไฟล์เดียว ใช้ Node.js **22.12+** โดยไม่ต้องรัน `npm install`, ติดตั้ง npm, Python, compiler, Electron หรือ SQLite และคัดลอกไฟล์เดียวไปใช้นอกโฟลเดอร์โปรเจกต์ได้ Termux [แยก npm ออกจากแพ็กเกจ Node.js แล้ว](https://github.com/termux/termux-packages/blob/master/packages/nodejs-lts/build.sh) จึงไม่ใช้ npm ในขั้นตอนติดตั้งนี้
+
+Android อาจหยุดแอปขณะอยู่เบื้องหลังได้ หากต้องเปิด tunnel ต่อเนื่องให้อนุญาตการทำงานเบื้องหลังและปิด battery optimization สำหรับ Termux ตาม [คำแนะนำของ Termux](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent) การเชื่อมต่อใหม่ทำงานเมื่อโปรเซสยังรันอยู่เท่านั้น
+
+สำหรับผู้พัฒนา: แก้โค้ดใน `client/` แล้วใช้ `npm run build:termux` เพื่อสร้าง `ptunnel.js` ใหม่ และ `npm run check:termux` เพื่อตรวจว่าไฟล์ตรงกับ source เวอร์ชัน `ws` ใน lockfile และใบอนุญาต MIT จะรวมอยู่ในไฟล์ที่สร้างด้วย
+
 ## ใช้ผ่านคำสั่ง / CLI in two steps
 
 Use the included CLI directly to avoid confusion with unrelated programs also named `ptunnel`:
