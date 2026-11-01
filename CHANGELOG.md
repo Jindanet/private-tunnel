@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add boot startup before sign-in for CLI and GUI: `ptunnel tcp 22 --startup` or the per-tunnel desktop toggle installs Windows boot tasks, Linux systemd services, macOS LaunchDaemons, or Termux:Boot scripts. Request OS elevation during installation and use unprivileged service identities.
+- Save private, independent boot profiles; preserve HTTP/TCP target, client identity and domain settings; expose status, logs, preview, start/stop and uninstall commands. Keep desktop credentials encrypted separately, explain the service key copy, and prevent duplicate workers with a lock.
 - Add a standalone `ptunnel.js` client for Termux and Node.js 22.12+. Bundle the WebSocket client and MIT notices so users can run it after `pkg install nodejs-lts git -y`, without npm, native compilation, Electron or SQLite.
 - Guide first-time users through server, hidden access-key, HTTP/TCP and local-target setup. Save a private profile, resume the most recent tunnel with `node ptunnel.js`, and provide setup, status and reset commands.
 - Use readable mobile terminal logs with copyable public addresses, visible connection errors and bounded shutdown. Keep credentials in the Authorization header and require TLS for remote servers.

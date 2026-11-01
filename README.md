@@ -74,6 +74,53 @@ Android อาจหยุดแอปขณะอยู่เบื้องห
 
 สำหรับผู้พัฒนา: แก้โค้ดใน `client/` แล้วใช้ `npm run build:termux` เพื่อสร้าง `ptunnel.js` ใหม่ และ `npm run check:termux` เพื่อตรวจว่าไฟล์ตรงกับ source เวอร์ชัน `ws` ใน lockfile และใบอนุญาต MIT จะรวมอยู่ในไฟล์ที่สร้างด้วย
 
+## เริ่ม tunnel ตั้งแต่บูต ก่อนล็อกอิน / Boot startup
+
+บันทึกที่อยู่เซิร์ฟเวอร์และกุญแจก่อนด้วย `node ptunnel.js` หรือ `init` แล้วติดตั้ง tunnel ที่ต้องการด้วยคำสั่งเดียว:
+
+```bash
+node ptunnel.js tcp 22 --startup
+# หรือ CLI ที่ติดตั้งเป็นคำสั่งสั้นแล้ว:
+ptunnel tcp 22 --startup
+```
+
+โปรแกรมขอสิทธิ์ผู้ดูแลผ่าน UAC, sudo/polkit หรือหน้าต่างยืนยันของ macOS แล้วติดตั้งและเริ่มตัวทำงานเบื้องหลังทันที ครั้งถัดไปที่บูตเครื่อง tunnel จะเริ่มก่อนล็อกอิน ไม่ต้องเปิด terminal หรือ GUI ค้างไว้ ใช้ `http 3000 --startup` ได้เช่นกัน แต่ละ target มี service แยกกัน การรันคำสั่งเดิมซ้ำจะอัปเดตรายการเดิมแทนการสร้างซ้ำ
+
+**GUI:** เพิ่มและบันทึกรายการตามปกติ แล้วเปิดตัวเลือก **เริ่มแชร์ตั้งแต่บูต ก่อนล็อกอิน** ใต้รายการนั้น ยืนยันสิทธิ์ผู้ดูแลครั้งเดียว แอปจะแสดงสถานะจากตัวทำงานเบื้องหลัง เมื่อปิด GUI หรือออกจากแอป service จะทำงานต่อ ปุ่มหยุดหยุดเฉพาะรอบปัจจุบันและจะเริ่มอีกครั้งเมื่อบูต หากต้องการถอน service ให้ปิดตัวเลือกนี้หรือลบรายการ
+
+| OS | ตัวเริ่มตอนบูต | ข้อกำหนด |
+| --- | --- | --- |
+| Windows | Task Scheduler, trigger `AtStartup` | ใช้บัญชี LocalService โดยไม่ต้องบันทึกรหัสผ่าน Windows และไม่เปิดหน้าต่าง terminal |
+| Linux | systemd system service, `multi-user.target` | ต้องมี systemd และ sudo (CLI) หรือ polkit/pkexec (GUI); service ทำงานด้วยบัญชีผู้ใช้เดิม |
+| macOS | LaunchDaemon ใน `/Library/LaunchDaemons` | ยืนยันสิทธิ์ผู้ดูแล; ทำงานด้วยบัญชีผู้ใช้เดิมก่อน sign-in |
+| Android / Termux (CLI) | สคริปต์ใน `~/.termux/boot` | ต้องติดตั้ง [Termux:Boot](https://github.com/termux/termux-boot) จากแหล่งเดียวกับ Termux เปิดแอปเสริมครั้งแรก และอนุญาตการทำงานเบื้องหลัง Android อาจต้องปลดล็อกเครื่องหลังรีบูตก่อนเริ่มได้ |
+
+PrivateTunnel เริ่มเฉพาะ tunnel และจะเชื่อมต่อใหม่หากเครือข่ายยังไม่พร้อม บริการปลายทาง เช่น SSH ที่พอร์ต `22`, เว็บ หรือเกม ต้องตั้งให้เปิดอัตโนมัติด้วยตัวเอง หากยังไม่เปิด ผู้เข้าชมจะยังเชื่อมต่อปลายทางไม่ได้ แม้ tunnel จะออนไลน์แล้ว ดิสก์หรือ home ที่เข้ารหัสอาจต้องปลดล็อกก่อนอ่าน runtime ได้ ควรติดตั้ง Node.js หรือแอปในตำแหน่งถาวรและอย่าย้ายหรือลบ runtime หลังติดตั้ง startup
+
+### จัดการ service ผ่าน CLI
+
+```bash
+node ptunnel.js startup status           # แสดง ID, สถานะล่าสุด, ที่อยู่สาธารณะ และไฟล์ log
+node ptunnel.js startup install          # ติดตั้งจาก tunnel ล่าสุดที่บันทึกไว้
+node ptunnel.js tcp 22 --startup --dry-run # ดูแผนโดยไม่ติดตั้งจริงหรือเปิดสิทธิ์ผู้ดูแล
+node ptunnel.js startup stop ID          # หยุดตอนนี้ แต่ยังเริ่มเมื่อบูตครั้งหน้า
+node ptunnel.js startup start ID         # เริ่มใหม่ทันที
+node ptunnel.js startup remove ID        # หยุดและถอนรายการนี้
+node ptunnel.js startup remove all       # ถอนทุกรายการของ CLI โปรไฟล์นี้
+```
+
+ใช้ ID ที่แสดงจาก `startup status` สถานะมาจาก heartbeat ของ worker โดยตรง ไม่ใช่การทดสอบการเข้าถึงจากอินเทอร์เน็ต การสั่งเริ่ม หยุด หรือถอน service อาจต้องยืนยันสิทธิ์ผู้ดูแลอีกครั้งตาม OS Log หมุนเมื่อเกินประมาณ 1 MiB และเก็บสำรองหนึ่งไฟล์ การรัน startup runner ซ้ำจะตรวจ lock เพื่อป้องกันการเปิด tunnel เดิมซ้ำ
+
+Linux GUI แบบ AppImage ใช้ตำแหน่ง AppImage เดิมและโหมด [extract-and-run](https://docs.appimage.org/user-guide/troubleshooting/fuse.html) สำหรับ worker เพื่อไม่ต้องอาศัย FUSE หรือ session กราฟิกตอนบูต
+
+Windows GUI จะคัดลอก runtime ของแอปไปไว้ในโฟลเดอร์ service ที่จำกัดสิทธิ์ จึงใช้พื้นที่เพิ่มเติมต่อรายการ แต่ไม่ต้องติดตั้ง Node.js แยกและไม่ต้องพึ่งตำแหน่งแอปเดิมตอนบูต
+
+**กุญแจสำหรับ service:** การทำงานก่อนล็อกอินใช้โปรไฟล์แยกจากกุญแจที่ GUI เข้ารหัสด้วย keyring เพราะ keyring อาจยังล็อกอยู่ Installer จึงเก็บสำเนากุญแจในไฟล์ service ที่จำกัดสิทธิ์ไว้ (`0600` บน POSIX; Windows ACL อนุญาตเฉพาะเจ้าของ, LocalService, SYSTEM และ Administrators) กุญแจไม่อยู่ใน startup arguments, unit/plist/task definition หรือ manifest ของผู้ใช้ ควรออกกุญแจแยกต่ออุปกรณ์/งานจากหน้าแอดมิน
+
+ตำแหน่ง service คือ `%ProgramData%\PrivateTunnel\startup` บน Windows, `/var/lib/privatetunnel/startup` บน Linux, `/Library/Application Support/PrivateTunnel/startup` บน macOS และ `~/.local/share/privatetunnel/startup` บน Termux โปรแกรมแสดง path ของโปรไฟล์และ log หลังติดตั้ง Manifest ข้างไฟล์ config (`.startup.json`) เก็บเฉพาะข้อมูลรายการและ ID
+
+การติดตั้งจะจำเซิร์ฟเวอร์ กุญแจ target และตัวเลือก domain ณ เวลานั้น หากเปลี่ยนค่าเหล่านี้ให้รัน `--startup` เดิมซ้ำ หรือปิดแล้วเปิดตัวเลือกใน GUI เพื่ออัปเดต service เมื่อถอน service โปรแกรมจะหยุด worker และลบไฟล์กุญแจของรายการนั้น หากยกเลิกการให้สิทธิ์ผู้ดูแล โปรแกรมจะแสดงข้อผิดพลาดและไม่รายงานว่าติดตั้งสำเร็จ
+
 ## ใช้ผ่านคำสั่ง / CLI in two steps
 
 Use the included CLI directly to avoid confusion with unrelated programs also named `ptunnel`:

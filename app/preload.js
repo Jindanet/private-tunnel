@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteTunnel:         (id) => ipcRenderer.invoke('delete-tunnel', id),
   startTunnel:          (id) => ipcRenderer.invoke('start-tunnel', id),
   stopTunnel:           (id) => ipcRenderer.invoke('stop-tunnel', id),
+  setTunnelStartup:     (data) => ipcRenderer.invoke('set-tunnel-startup', data),
   openExternal:         (url) => ipcRenderer.invoke('open-external', url),
   copyText:             (text) => ipcRenderer.invoke('copy-text', text),
 

@@ -60,6 +60,8 @@
       "client/tunnel-client.js",
       "client/local-forwarder.js",
       "client/server-url.js",
+      "client/startup.js",
+      "ptunnel.js",
       "shared/protocol.js",
       "shared/tunnel-v4.js",
       "node_modules/**/*",

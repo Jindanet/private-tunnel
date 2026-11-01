@@ -7,7 +7,7 @@ const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
 const { EventEmitter } = require('node:events');
 
-async function loadMain({available=true}={}) {
+async function loadMain({available=true,startup=null}={}) {
   const root = path.resolve(__dirname,'..');
   const filename = path.join(root,'app/main.js');
   const realRequire = createRequire(filename);
@@ -38,7 +38,7 @@ async function loadMain({available=true}={}) {
     mkdirSync(){},writeFileSync:(...args)=>{assert.equal(ready,true);writes.push(args);},chmodSync(){},renameSync(){},
     unlinkSync(){throw Object.assign(new Error('No temporary file'),{code:'ENOENT'});}};
   const isolatedProcess={...process,env:{USERPROFILE:path.join(root,'tests','fake-home'),PTUNNEL_CONFIG_PATH:path.join(root,'tests','fake-home','desktop.json')}};
-  const context={require:(name)=>name==='electron'?electron:name==='node:fs'?fakeFs:realRequire(name),
+  const context={require:(name)=>name==='electron'?electron:name==='node:fs'?fakeFs:name==='../client/startup'&&startup?{createStartupManager:()=>startup}:realRequire(name),
     __dirname:path.dirname(filename),process:isolatedProcess,console,Buffer,URL,setTimeout,clearTimeout,module:{exports:{}}};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),context,{filename});
   assert.equal(writes.length,0,'No credentials are rewritten before Electron is ready');
@@ -80,6 +80,38 @@ test('actual main IPC rejects untrusted documents and validates privileged actio
   assert.equal(window.webContents.popup().action,'deny');
   let prevented=false;window.webContents.emit('will-navigate',{preventDefault:()=>{prevented=true;}});
   assert.equal(prevented,true);
+});
+
+test('desktop startup IPC uses the headless service, preserves profiles on failure and removes jobs before deleting', async () => {
+  const entries = [], calls = [];
+  let rejected = false;
+  const startup = {
+    status: () => entries,
+    async enable(profile) {
+      if (rejected) throw new Error('Administrator approval cancelled');
+      calls.push({ action: 'enable', profile });
+      entries.push({ id: 'service-id', clientId: profile.clientId, installed: true, status: 'online', url: 'example.com:30000' });
+      return { note: 'Starts before sign-in' };
+    },
+    async control(id, action) { calls.push({ id, action }); if (action === 'remove') entries.length = 0; },
+  };
+  const {handlers, trusted} = await loadMain({startup});
+  const tunnel = handlers.get('add-tunnel')(trusted, {type:'tcp',port:22});
+  rejected = true;
+  assert.match((await handlers.get('set-tunnel-startup')(trusted,{id:tunnel.id,enabled:true})).error,/cancelled/);
+  assert.equal(handlers.get('get-config')(trusted).tunnels[0].startup,false);
+  rejected = false;
+  assert.equal((await handlers.get('set-tunnel-startup')(trusted,{id:tunnel.id,enabled:true})).ok,true);
+  assert.equal(calls[0].profile.localPort,22);
+  assert.equal(calls[0].profile.clientId,tunnel.clientId);
+  const saved = handlers.get('get-config')(trusted).tunnels[0];
+  assert.equal(saved.startup,true);assert.equal(saved.startupState.status,'online');
+  assert.equal((await handlers.get('start-tunnel')(trusted,tunnel.id)).ok,true);
+  await handlers.get('stop-tunnel')(trusted,tunnel.id);
+  assert.deepEqual(calls.slice(-2).map((item)=>item.action),['start','stop']);
+  await handlers.get('delete-tunnel')(trusted,tunnel.id);
+  assert.equal(calls.at(-1).action,'remove');
+  assert.equal(handlers.get('get-config')(trusted).tunnels.length,0);
 });
 
 test('actual main IPC preserves non-secret settings while unavailable storage clears the access key', async () => {

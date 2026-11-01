@@ -12,7 +12,7 @@ function browserBridge() {
   const fixture = window.__rendererFixture = {
     config: { serverUrl: '', token: '', tunnels: [] },
     checks: [], adds: [], saves: 0, pendingChecks: [], manualChecks: false,
-    startFailure: '', addFailure: '', checkFailure: '', serverFailure: false,
+    startFailure: '', addFailure: '', checkFailure: '', serverFailure: false, startupFailure: '',
     emitStatus: () => {}, emitRequest: () => {},
   };
   window.api = {
@@ -51,6 +51,12 @@ function browserBridge() {
       return {ok:true};
     },
     stopTunnel: async (id) => { fixture.emitStatus({id,status:'stopped',url:''}); return true; },
+    setTunnelStartup: async ({id,enabled}) => {
+      await pause(20);
+      if(fixture.startupFailure)return {error:fixture.startupFailure};
+      fixture.config.tunnels.find((tunnel)=>tunnel.id===id).startup=enabled;
+      return {ok:true,enabled};
+    },
     deleteTunnel: async () => true,
     copyText: async (value) => { fixture.copied = value; },
     openExternal: async (value) => { fixture.opened = value; },
@@ -114,7 +120,7 @@ async function runElectronChecks() {
       await win.webContents.executeJavaScript('document.querySelector("#view-setup [data-lang=en]").click()');
     }
     const results = await win.webContents.executeJavaScript('(' + browserChecks.toString() + ')()');
-    assert.equal(results.length, 13);
+    assert.equal(results.length, 14);
     assert.deepEqual(errors, []);
     await win.webContents.executeJavaScript('document.getElementById("close-guide-btn").click(); document.getElementById("add-tunnel-btn").click(); document.getElementById("advanced-options").open=true');
     win.setContentSize(380,540);
@@ -243,6 +249,19 @@ async function browserChecks() {
   passed.push('one publication with same checked UUID');
 
   const id = fixture.adds[0].id;
+  const startupToggle=()=>document.querySelector('[data-action="startup"]');
+  ensure(startupToggle()&&!startupToggle().checked,'Startup is opt-in per tunnel');
+  fixture.startupFailure='Administrator approval cancelled';startupToggle().click();
+  await pause(40);
+  ensure(!startupToggle().checked&&document.querySelector('.url-error').textContent.includes('cancelled'),'Cancelled installation keeps startup off and shows error');
+  fixture.startupFailure='';startupToggle().click();
+  await pause(40);ensure(startupToggle().checked,'Successful installation turns startup on');
+  startupToggle().click();await pause(40);ensure(!startupToggle().checked,'Startup can be removed');
+  fixture.startupFailure='Administrator approval cancelled';startupToggle().click();await pause(40);
+  ensure(getComputedStyle(document.querySelector('.tcard-url')).display!=='none'&&document.querySelector('.url-error').textContent.includes('cancelled'),'Stopped cards show startup installation errors');
+  fixture.startupFailure='';
+  fixture.emitStatus({id,status:'online',url:'https://shared.public.example.test'});
+  passed.push('boot startup opt-in, cancellation, install and remove');
   fixture.emitRequest({id,method:'<img src=x>',path:'/<script>alert(1)</script>',statusCode:'<svg onload=alert(1)>'});
   document.querySelector('.request-details').open = true;
   await pause();

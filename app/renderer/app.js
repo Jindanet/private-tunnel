@@ -530,6 +530,25 @@ function makeCard(tunnel) {
     : actionButton(t(status === 'error' ? 'retry' : 'start'), 'btn-start', 'start', tunnel, () => doStart(tunnel.id)));
   actions.append(actionButton(t('delete'), 'btn-del', 'delete', tunnel, () => doDel(tunnel.id)));
   card.append(actions);
+  if (typeof window.api.setTunnelStartup === 'function') {
+    const startup = node('div', 'startup-setting');
+    const label = node('label', 'startup-label');
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = Boolean(tunnel.startup);
+    toggle.disabled = pendingActions.has(tunnel.id);
+    toggle.dataset.action = 'startup';
+    toggle.setAttribute('aria-describedby', 'startup-hint-' + tunnel.id);
+    const labelText = currentLang === 'th' ? 'เริ่มแชร์ตั้งแต่บูต ก่อนล็อกอิน' : 'Start sharing at boot, before sign-in';
+    label.append(toggle, node('span', '', labelText));
+    const hint = node('p', 'startup-hint', currentLang === 'th'
+      ? 'ระบบจะขอสิทธิ์ผู้ดูแลและเก็บกุญแจแยกในไฟล์ส่วนตัวสำหรับ service เปลี่ยนเซิร์ฟเวอร์หรือกุญแจแล้วให้ปิดและเปิดตัวเลือกนี้ใหม่'
+      : 'Requires administrator approval and a separate private service key file. Turn off and on again after changing the server or key.');
+    hint.id = 'startup-hint-' + tunnel.id;
+    toggle.addEventListener('change', () => doStartup(tunnel.id, toggle.checked));
+    startup.append(label, hint);
+    card.append(startup);
+  }
   if (state.requests?.length) {
     const details = node('details', 'request-details');
     details.open = Boolean(state.logOpen);
@@ -608,6 +627,24 @@ async function doStop(id) {
     refreshCard(id);
     updateDot();
   }
+}
+
+async function doStartup(id, enabled) {
+  if (pendingActions.has(id)) return;
+  const tunnel = (config.tunnels || []).find((item) => item.id === id);
+  if (!tunnel) return;
+  pendingActions.add(id);
+  const state = stateFor(id);
+  state.actionError = null;
+  refreshCard(id);
+  try {
+    const result = await window.api.setTunnelStartup({ id, enabled });
+    if (result?.error || !result?.ok) throw new Error(result?.error || t('requestFailed'));
+    tunnel.startup = result.enabled;
+    Object.assign(state, { status: enabled ? 'connecting' : 'stopped', url: '', error: null });
+    toast(currentLang === 'th' ? (enabled ? 'ติดตั้งการเริ่มตอนบูตแล้ว' : 'ปิดการเริ่มตอนบูตแล้ว') : (enabled ? 'Boot startup installed' : 'Boot startup removed'));
+  } catch (error) { state.actionError = error.message || t('requestFailed'); }
+  finally { pendingActions.delete(id); refreshCard(id); updateDot(); }
 }
 
 async function doDel(id) {
@@ -992,6 +1029,9 @@ async function init() {
   try {
     const saved = await window.api.getConfig();
     config = { ...saved, tunnels: Array.isArray(saved?.tunnels) ? saved.tunnels : [] };
+    for (const tunnel of config.tunnels) {
+      if (tunnel.startupState) Object.assign(stateFor(tunnel.id), tunnel.startupState);
+    }
     window.api.onTunnelStatus(onTunnelStatus);
     window.api.onTunnelRequest(onTunnelRequest);
     updateServerMeta();

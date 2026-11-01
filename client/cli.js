@@ -9,6 +9,7 @@ const readline = require('node:readline/promises');
 const { Writable } = require('node:stream');
 const { requireSecureServerWebSocketUrl } = require('./server-url');
 const TunnelUI = require('./ui');
+const { createStartupManager } = require('./startup');
 
 function configPath() {
   return path.resolve(process.env.PTUNNEL_CONFIG_PATH || path.join(os.homedir(), '.ptunnel'));
@@ -115,6 +116,8 @@ function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--root') options.root = true;
     else if (arg === '--plain') options.plain = true;
+    else if (arg === '--startup') options.startup = true;
+    else if (arg === '--dry-run') options.dryRun = true;
     else if (['--server', '--token', '--domain'].includes(arg)) {
       const value = argv[++i];
       if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value.`);
@@ -199,6 +202,13 @@ PrivateTunnel · Termux / Node.js 22.12+
   node ptunnel.js setup           เปลี่ยนค่าที่บันทึก / Edit saved settings
   node ptunnel.js http 3000        แชร์เว็บไซต์ / Share HTTP
   node ptunnel.js tcp 25565        แชร์ TCP / Share TCP
+  node ptunnel.js tcp 22 --startup เริ่มตั้งแต่บูต ก่อนล็อกอิน / Install boot service
+  node ptunnel.js startup status   ดูบริการ / List boot services and their IDs
+  node ptunnel.js startup install  ติดตั้งจากรายการล่าสุด / Use saved tunnel
+  node ptunnel.js startup stop ID  หยุดชั่วคราว / Stop until next boot
+  node ptunnel.js startup start ID เริ่มบริการ / Start service now
+  node ptunnel.js startup remove ID|all  ถอนการเริ่มอัตโนมัติ / Uninstall
+  --startup --dry-run             Preview installation without making changes
   node ptunnel.js http localhost:3000 --domain apps.example.com [--root]
   node ptunnel.js status          ดูค่าที่บันทึก / Show profile (key hidden)
   node ptunnel.js reset           ล้างการตั้งค่า / Clear saved settings
@@ -250,13 +260,52 @@ function startTunnel(config, profile, options) {
 }
 
 async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === 'startup' && argv[1] === 'run') {
+    if (argv.length !== 4 || argv[2] !== '--profile' || !path.isAbsolute(argv[3])) throw new Error('Internal startup runner requires an absolute --profile path.');
+    require('./startup-runner').runStartup(argv[3]);
+    return;
+  }
   const { options, positional } = parseArgs(argv);
   if (options.help) { printHelp(); return; }
   const filename = configPath();
   let config = loadConfig(filename);
+  const startup = createStartupManager({ configPath: filename });
   const command = positional[0];
+  if (command === 'startup') {
+    if (options.server || options.token || options.domain || options.root || options.startup) throw new Error('Startup commands use saved profiles. Configure the server and target first.');
+    const action = positional[1] || 'status';
+    if (action === 'status' || action === 'list') {
+      if (positional.length > 2) throw new Error('startup status takes no arguments.');
+      const entries = startup.status();
+      if (!entries.length) console.log('No boot tunnels. Run node ptunnel.js tcp 22 --startup.');
+      for (const entry of entries) {
+        console.log(`${entry.id}  ${entry.tunnelType} ${entry.localHost}:${entry.localPort}  ${entry.installed ? entry.status : 'installation missing'}`);
+        if (entry.url) console.log(`Public: ${entry.url}`);
+        if (entry.error) console.log(`Error: ${entry.error}`);
+        console.log(`Provider: ${entry.provider}\nLog: ${entry.logPath}\n${entry.note}`);
+      }
+      return;
+    }
+    if (action === 'install' && positional.length === 2) {
+      const profile = savedTunnel(config);
+      if (!profile || !config.clientId) throw new Error('Save a tunnel first, e.g. node ptunnel.js tcp 22.');
+      const result = await startup.enable({ ...connection(config.serverUrl, config.token), ...profile, clientId: buildTunnelProfileClientId(config.clientId, profile) }, { dryRun: options.dryRun });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    if (!['start', 'stop', 'remove'].includes(action) || positional.length > 3 || options.dryRun) throw new Error('Use startup status, install [--dry-run], start ID, stop ID or remove ID|all.');
+    const entries = startup.status();
+    const id = positional[2] || (entries.length === 1 ? entries[0].id : '');
+    const targets = id === 'all' && action === 'remove' ? entries.map((entry) => entry.id) : [id];
+    if (!id) throw new Error('Choose a tunnel ID from startup status.');
+    for (const target of targets) await startup.control(target, action);
+    console.log(`Startup ${action} complete.`);
+    return;
+  }
+  if (options.dryRun && !options.startup) throw new Error('--dry-run requires --startup or startup install.');
   const profileCommand = ['status', 'reset', 'setup', 'init'].includes(command);
   if (profileCommand && positional.length !== 1) throw new Error(`${command} does not accept extra arguments.`);
+  if ((profileCommand || options.server || options.token) && options.startup) throw new Error('--startup belongs to a tunnel command, e.g. tcp 22 --startup.');
   const settingConnection = options.server !== undefined || options.token !== undefined;
   if (settingConnection && command && command !== 'init') {
     throw new Error('Save --server and --token using init first, then run your tunnel command.');
@@ -269,6 +318,7 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === 'reset') {
+    if (startup.status().length) throw new Error('Remove boot services with startup remove all before resetting the saved profile.');
     delete config.serverUrl; delete config.token; delete config.lastTunnel;
     saveConfig(filename, config);
     console.log('Profile reset. Run node ptunnel.js to set up again.');
@@ -301,6 +351,15 @@ async function main(argv = process.argv.slice(2)) {
     if (!config.serverUrl || !config.token) config = await configure(config, { full: false });
   }
   Object.assign(config, connection(config.serverUrl, config.token), { lastTunnel: profile });
+  if (options.startup) {
+    const serviceProfile = { ...connection(config.serverUrl, config.token), ...profile, clientId: buildTunnelProfileClientId(config.clientId, profile) };
+    if (!options.dryRun) saveConfig(filename, config);
+    const result = await startup.enable(serviceProfile, { dryRun: options.dryRun });
+    console.log(options.dryRun ? 'Startup installation preview:' : 'Boot tunnel installed and started in the background.');
+    console.log(`ID: ${result.id}\nProvider: ${result.provider}\nProfile: ${result.profilePath}\nLog: ${result.logPath}\n${result.note}`);
+    console.log('The boot service uses a separate private access-key copy. Re-run this command to update its settings.');
+    return;
+  }
   saveConfig(filename, config);
   console.log(`Saved profile: ${filename}`);
   startTunnel(config, profile, options);

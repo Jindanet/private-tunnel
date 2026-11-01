@@ -128,6 +128,315 @@ var require_ui = __commonJS({
   }
 });
 
+// client/startup.js
+var require_startup = __commonJS({
+  "client/startup.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs"), os = require("node:os"), path = require("node:path"), crypto = require("node:crypto"), { spawn } = require("node:child_process"), { requireSecureServerWebSocketUrl } = require_server_url(), sh = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'", ps = (value) => "'" + String(value).replace(/'/g, "''") + "'", xml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]), unit = (value) => '"' + String(value).replace(/%/g, "%%").replace(/\$/g, "$$").replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    function writePrivate(filename, data) {
+      fs.mkdirSync(path.dirname(filename), { recursive: !0, mode: 448 });
+      let temporary = `${filename}.${crypto.randomUUID()}.tmp`;
+      try {
+        fs.writeFileSync(temporary, data, { mode: 384, flag: "wx" }), fs.renameSync(temporary, filename), process.platform !== "win32" && fs.chmodSync(filename, 384);
+      } finally {
+        try {
+          fs.unlinkSync(temporary);
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
+    }
+    function readJson(filename, fallback = null) {
+      try {
+        return JSON.parse(fs.readFileSync(filename, "utf8"));
+      } catch (error) {
+        if (error.code === "ENOENT") return fallback;
+        throw error;
+      }
+    }
+    function execute(command, args, { interactive = !1, env = process.env } = {}) {
+      return new Promise((resolve, reject) => {
+        let child = spawn(command, args, { windowsHide: !0, env, stdio: interactive ? "inherit" : ["ignore", "pipe", "pipe"] }), output = "";
+        child.stdout?.on("data", (data) => {
+          output = (output + data).slice(-8192);
+        }), child.stderr?.on("data", (data) => {
+          output = (output + data).slice(-8192);
+        }), child.once("error", reject), child.once("exit", (code) => code === 0 ? resolve(output.trim()) : reject(new Error(output.trim() || `Installer exited ${code}. Authorization may have been cancelled.`)));
+      });
+    }
+    function validateProfile(profile) {
+      let serverUrl = requireSecureServerWebSocketUrl(profile.serverUrl);
+      if (new URL(serverUrl).search || !/^[\x21-\x7e]{32,4096}$/.test(profile.token || "")) throw new Error("Save a valid server address and access key before enabling startup.");
+      if (!["http", "tcp"].includes(profile.tunnelType) || !Number.isInteger(profile.localPort) || profile.localPort < 1 || profile.localPort > 65535) throw new Error("Save a valid HTTP/TCP target before enabling startup.");
+      if (typeof profile.clientId != "string" || !profile.clientId || profile.clientId.length > 190) throw new Error("A saved client identity is required.");
+      let localHost = String(profile.localHost || "localhost");
+      if (/[\x00-\x20\x7f]/.test(localHost) || localHost.length > 253) throw new Error("Invalid local host.");
+      return {
+        serverUrl,
+        token: profile.token,
+        clientId: profile.clientId,
+        tunnelType: profile.tunnelType,
+        localHost,
+        localPort: profile.localPort,
+        publishDomain: String(profile.publishDomain || ""),
+        publishMode: profile.publishMode === "root" ? "root" : "subdomain",
+        desiredSubdomain: String(profile.desiredSubdomain || "")
+      };
+    }
+    function createStartupManager({
+      configPath,
+      channel = "cli",
+      platform = process.platform,
+      env = process.env,
+      home = os.homedir(),
+      user = os.userInfo(),
+      gui = !1,
+      runtime = process.execPath,
+      bundledBinary = !!process.pkg,
+      electronNode = !1,
+      bundlePath,
+      run = execute,
+      systemRoot
+    } = {}) {
+      let filePath = platform === "win32" ? path.win32 : path.posix, termux = platform === "android" || platform === "linux" && /com\.termux/.test(env.PREFIX || "");
+      if (!termux && !["win32", "linux", "darwin"].includes(platform)) throw new Error("Boot startup supports Windows, macOS, Linux with systemd, and Termux.");
+      let owner = crypto.createHash("sha256").update(`${path.resolve(configPath)}:${channel}`).digest("hex").slice(0, 12), manifestPath = `${configPath}.startup.json`, provider = termux ? "termux-boot" : platform === "win32" ? "windows-task" : platform === "darwin" ? "launchd" : "systemd", base = systemRoot || (termux ? filePath.join(home, ".local/share/privatetunnel/startup") : platform === "win32" ? filePath.join(env.ProgramData || "C:\\ProgramData", "PrivateTunnel", "startup") : platform === "darwin" ? "/Library/Application Support/PrivateTunnel/startup" : "/var/lib/privatetunnel/startup"), defaultBundle = process.argv[1], source = bundledBinary ? runtime : bundlePath || defaultBundle;
+      function load() {
+        let manifest = readJson(manifestPath, { version: 1, entries: [] });
+        if (manifest.version !== 1 || !Array.isArray(manifest.entries) || manifest.entries.some((item) => !/^[a-f0-9]{16}$/.test(item.id))) throw new Error("Invalid startup manifest. Restore it before changing startup services.");
+        return manifest;
+      }
+      function describe(id) {
+        if (!/^[a-f0-9]{16}$/.test(id)) throw new Error("Invalid startup ID.");
+        let job = `privatetunnel-${owner}-${id}`, directory = filePath.join(base, owner, id), stateDir = filePath.join(directory, "state"), runner = filePath.join(directory, bundledBinary ? platform === "win32" ? "ptunnel.exe" : "ptunnel" : "ptunnel.js"), runtimeDir = filePath.join(directory, "runtime"), executable = platform === "win32" && electronNode ? filePath.join(runtimeDir, filePath.basename(runtime)) : platform === "win32" && !bundledBinary ? filePath.join(directory, "node.exe") : bundledBinary ? runner : runtime, profilePath = filePath.join(directory, "profile.json"), args = [...bundledBinary ? [] : [runner], "startup", "run", "--profile", profilePath], definition2 = termux ? filePath.join(home, ".termux/boot", job) : platform === "win32" ? filePath.join(directory, "launch.ps1") : platform === "darwin" ? `/Library/LaunchDaemons/com.jindanet.${job}.plist` : `/etc/systemd/system/${job}.service`;
+        return {
+          id,
+          job,
+          provider,
+          directory,
+          stateDir,
+          profilePath,
+          runner,
+          runtimeDir,
+          executable,
+          args,
+          definition: definition2,
+          logPath: filePath.join(stateDir, "service.log"),
+          statusPath: filePath.join(stateDir, "status.json"),
+          note: termux ? "Install Termux:Boot from the same source as Termux, open it once, and allow background activity. Android may require device unlock after reboot." : "Starts at boot before sign-in. Administrator approval is required to install or remove it."
+        };
+      }
+      function status(id) {
+        return load().entries.filter((entry) => !id || entry.id === id).map((entry) => {
+          let info = describe(entry.id), state = null, error = null;
+          try {
+            state = readJson(info.statusPath);
+          } catch {
+            error = "Cannot read the boot service status. Check its file permissions.";
+          }
+          let fresh = state?.updatedAt && Date.now() - Date.parse(state.updatedAt) < 15e3;
+          return {
+            ...entry,
+            ...info,
+            status: fresh || state?.status === "error" ? state.status : "stopped",
+            url: fresh ? String(state.url || "") : "",
+            error: error || state?.error || null,
+            installed: fs.existsSync(info.profilePath),
+            lastStatus: state?.status || null,
+            updatedAt: state?.updatedAt || null
+          };
+        });
+      }
+      function definition(info) {
+        let command = [info.executable, ...info.args];
+        return termux ? `#!${env.PREFIX || "/data/data/com.termux/files/usr"}/bin/sh
+# PrivateTunnel boot job
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
+nohup ${command.map(sh).join(" ")} >/dev/null 2>&1 &
+` : platform === "win32" ? `${electronNode ? `$env:ELECTRON_RUN_AS_NODE = '1'\r
+` : ""}& ${ps(info.executable)} @(${info.args.map(ps).join(", ")})\r
+exit $LASTEXITCODE\r
+` : platform === "darwin" ? `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.jindanet.${info.job}</string><key>UserName</key><string>${xml(user.username)}</string><key>ProgramArguments</key><array>${command.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>30</integer><key>EnvironmentVariables</key><dict>${electronNode ? "<key>ELECTRON_RUN_AS_NODE</key><string>1</string>" : ""}</dict></dict></plist>
+` : `[Unit]
+Description=PrivateTunnel boot tunnel
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=${Number(user.uid)}
+Group=${Number(user.gid)}
+ExecStart=${command.map(unit).join(" ")}
+${electronNode ? `Environment=ELECTRON_RUN_AS_NODE=1
+` : ""}${electronNode && env.APPIMAGE ? `Environment=APPIMAGE_EXTRACT_AND_RUN=1
+` : ""}Restart=on-failure
+RestartPreventExitStatus=1 2
+RestartSec=15
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+`;
+      }
+      function installer(info, action, stage) {
+        let installing = action === "install", stopping = action === "stop" || action === "remove", stagedSource = bundledBinary ? source : path.join(stage, "runner");
+        if (platform === "win32" && !termux) {
+          let qdir = ps(info.directory), qjob = ps(info.job), content = ["$ErrorActionPreference = 'Stop'", `$dir = ${qdir}`, `$job = ${qjob}`];
+          return installing ? content.push(
+            `$base = ${ps(base)}`,
+            `$namespace = ${ps(filePath.dirname(info.directory))}`,
+            `foreach ($parent in @(${ps(filePath.dirname(base))}, $base, $namespace)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null; if ((Get-Item -LiteralPath $parent).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Service parents must not be links.' }; $parentAcl = New-Object Security.AccessControl.DirectorySecurity; $parentAcl.SetAccessRuleProtection($true,$false); $parentAcl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544'))); foreach ($parentRule in @(@('S-1-5-18','FullControl'),@('S-1-5-32-544','FullControl'),@('S-1-5-19','ReadAndExecute'),@('S-1-5-32-545','ReadAndExecute'))) { $parentAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($parentRule[0])), $parentRule[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }; Set-Acl -LiteralPath $parent -AclObject $parentAcl }`,
+            "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+            "if ((Get-Item -LiteralPath $dir).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Service directory must not be a link.' }",
+            `$ownerSid = ${ps(user.sid || "")}`,
+            "if (!$ownerSid) { throw 'Missing installing user SID.' }",
+            "$acl = New-Object Security.AccessControl.DirectorySecurity",
+            "$acl.SetAccessRuleProtection($true, $false)",
+            "$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))",
+            "foreach ($rule in @(@('S-1-5-18','FullControl'),@('S-1-5-32-544','FullControl'),@('S-1-5-19','ReadAndExecute'),@($ownerSid,'ReadAndExecute'))) { $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($rule[0])), $rule[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
+            "Set-Acl -LiteralPath $dir -AclObject $acl",
+            "Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue",
+            "for ($wait = 0; $wait -lt 50 -and (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running'; $wait++) { Start-Sleep -Milliseconds 200 }",
+            `Copy-Item -LiteralPath ${ps(stagedSource)} -Destination ${ps(info.runner)} -Force`,
+            ...!bundledBinary && !electronNode ? [`Copy-Item -LiteralPath ${ps(runtime)} -Destination ${ps(info.executable)} -Force`] : [],
+            ...electronNode ? [
+              `$runtimeSource = ${ps(filePath.dirname(runtime))}`,
+              "if (Get-ChildItem -LiteralPath $runtimeSource -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'The installed application runtime must not contain filesystem links.' }",
+              `New-Item -ItemType Directory -Force -Path ${ps(info.runtimeDir)} | Out-Null`,
+              `Get-ChildItem -LiteralPath $runtimeSource -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination ${ps(info.runtimeDir)} -Recurse -Force }`
+            ] : [],
+            `Copy-Item -LiteralPath ${ps(path.join(stage, "profile.json"))} -Destination ${ps(info.profilePath)} -Force`,
+            `Copy-Item -LiteralPath ${ps(path.join(stage, "definition"))} -Destination ${ps(info.definition)} -Force`,
+            `New-Item -ItemType Directory -Force -Path ${ps(info.stateDir)} | Out-Null`,
+            `$stateAcl = Get-Acl -LiteralPath ${ps(info.stateDir)}`,
+            "$stateAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier('S-1-5-19')), 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))",
+            `Set-Acl -LiteralPath ${ps(info.stateDir)} -AclObject $stateAcl`,
+            `$ownedFiles = @(${[info.runner, info.profilePath, info.definition, ...!bundledBinary && !electronNode ? [info.executable] : []].map(ps).join(", ")})`,
+            ...electronNode ? [`$ownedFiles += @(${ps(info.runtimeDir)}); $ownedFiles += @(Get-ChildItem -LiteralPath ${ps(info.runtimeDir)} -Recurse -Force | ForEach-Object { $_.FullName })`] : [],
+            "foreach ($ownedFile in $ownedFiles) { $fileAcl = Get-Acl -LiteralPath $ownedFile; $fileAcl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544'))); Set-Acl -LiteralPath $ownedFile -AclObject $fileAcl }",
+            `$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Argument ${ps('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + info.definition + '"')}`,
+            "$trigger = New-ScheduledTaskTrigger -AtStartup",
+            "$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-19' -LogonType ServiceAccount -RunLevel Limited",
+            "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)",
+            "Register-ScheduledTask -TaskName $job -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'PrivateTunnel: starts at boot before sign-in' -Force | Out-Null",
+            "Start-ScheduledTask -TaskName $job"
+          ) : action === "remove" ? (content.push(
+            "Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue",
+            "for ($wait = 0; $wait -lt 50 -and (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running'; $wait++) { Start-Sleep -Milliseconds 200 }",
+            "Unregister-ScheduledTask -TaskName $job -Confirm:$false -ErrorAction SilentlyContinue",
+            ...[info.profilePath, info.runner, info.definition, ...!bundledBinary && !electronNode ? [info.executable] : []].map((file) => `Remove-Item -LiteralPath ${ps(file)} -Force -ErrorAction SilentlyContinue`)
+          ), electronNode && content.push(
+            `$runtimeRoot = [IO.Path]::GetFullPath(${ps(info.runtimeDir)})`,
+            "$serviceRoot = [IO.Path]::GetFullPath($dir) + [IO.Path]::DirectorySeparatorChar",
+            "if (!$runtimeRoot.StartsWith($serviceRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime cleanup must stay inside its service directory.' }",
+            "if (Test-Path -LiteralPath $runtimeRoot) { if ((Get-Item -LiteralPath $runtimeRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime cleanup cannot follow a link.' }; Remove-Item -LiteralPath $runtimeRoot -Recurse -Force }"
+          )) : content.push(`${stopping ? "Stop" : "Start"}-ScheduledTask -TaskName $job`), content.push(`[IO.File]::WriteAllText(${ps(path.join(stage, "success"))}, 'ok')`), `$ErrorActionPreference = 'Stop'\r
+try {\r
+${content.join(`\r
+`)}\r
+} catch { [IO.File]::WriteAllText(${ps(path.join(stage, "error"))}, $_.Exception.Message); exit 1 }\r
+`;
+        }
+        let lines = ["#!/bin/sh", "set -eu"], uid = Number(user.uid), gid = Number(user.gid);
+        if (installing) {
+          if (!termux && (!Number.isInteger(uid) || uid <= 0 || !Number.isInteger(gid) || gid < 0)) throw new Error("Run PrivateTunnel as a regular user. The installer will request administrator access itself.");
+          lines.push(
+            `[ ! -L ${sh(info.directory)} ] || { echo 'Service directory must not be a link.' >&2; exit 1; }`,
+            `mkdir -p ${sh(info.directory)} ${sh(info.stateDir)}`
+          ), provider === "systemd" && lines.push("command -v systemctl >/dev/null || { echo 'Linux boot startup requires systemd.' >&2; exit 1; }", `systemctl stop ${sh(info.job)} 2>/dev/null || true`), provider === "launchd" && lines.push(`launchctl bootout system/${sh("com.jindanet." + info.job)} 2>/dev/null || true`), lines.push(
+            `cp ${sh(stagedSource)} ${sh(info.runner)}`,
+            `cp ${sh(path.join(stage, "profile.json"))} ${sh(info.profilePath)}`,
+            `mkdir -p ${sh(filePath.dirname(info.definition))}`,
+            `cp ${sh(path.join(stage, "definition"))} ${sh(info.definition)}`,
+            `chmod 600 ${sh(info.profilePath)}`,
+            `chmod ${bundledBinary ? "755" : "644"} ${sh(info.runner)}`,
+            `chmod 700 ${sh(info.stateDir)}`
+          ), termux ? lines.push(`chmod 700 ${sh(info.directory)} ${sh(info.definition)}`) : lines.push(
+            `chown 0:${gid} ${sh(info.directory)} ${sh(info.runner)}`,
+            `chmod 750 ${sh(info.directory)}`,
+            `chown ${uid}:${gid} ${sh(info.profilePath)} ${sh(info.stateDir)}`,
+            `chown 0:0 ${sh(info.definition)}`,
+            `chmod 644 ${sh(info.definition)}`
+          );
+        }
+        return provider === "systemd" ? installing ? lines.push("systemctl daemon-reload", `systemctl enable --now ${sh(info.job)}`) : action === "remove" ? lines.push(`systemctl disable --now ${sh(info.job)}`, `rm -f ${sh(info.definition)} ${sh(info.profilePath)} ${sh(info.runner)}`, "systemctl daemon-reload") : lines.push(`systemctl ${stopping ? "stop" : "start"} ${sh(info.job)}`) : provider === "launchd" ? installing ? lines.push(`launchctl enable system/${sh("com.jindanet." + info.job)}`, `launchctl bootstrap system ${sh(info.definition)}`) : action === "remove" || action === "stop" ? (lines.push(`launchctl bootout system/${sh("com.jindanet." + info.job)} 2>/dev/null || true`), action === "remove" && lines.push(`rm -f ${sh(info.definition)} ${sh(info.profilePath)} ${sh(info.runner)}`)) : lines.push(`if launchctl print system/${sh("com.jindanet." + info.job)} >/dev/null 2>&1; then launchctl kickstart system/${sh("com.jindanet." + info.job)}; else launchctl bootstrap system ${sh(info.definition)}; fi`) : (stopping ? lines.push(`touch ${sh(filePath.join(info.stateDir, "stop"))}`) : lines.push(`rm -f ${sh(filePath.join(info.stateDir, "stop"))}`, `sh ${sh(info.definition)}`), action === "remove" && lines.push(`rm -f ${sh(info.definition)} ${sh(info.profilePath)}`)), lines.push(`printf ok > ${sh(path.join(stage, "success"))}`), lines.join(`
+`) + `
+`;
+      }
+      async function apply(info, action, profile) {
+        if (termux && action === "install") {
+          let lockPath = filePath.join(info.stateDir, "runner.lock"), lock = readJson(lockPath);
+          if (Number.isInteger(lock?.pid)) {
+            let alive = !1;
+            try {
+              process.kill(lock.pid, 0), alive = !0;
+            } catch (error) {
+              if (error.code !== "ESRCH") throw error;
+            }
+            if (alive) {
+              writePrivate(filePath.join(info.stateDir, "stop"), "");
+              for (let attempt = 0; attempt < 30 && fs.existsSync(lockPath); attempt++) await new Promise((resolve) => setTimeout(resolve, 200));
+              if (fs.existsSync(lockPath)) throw new Error("The previous Termux worker did not stop. Try startup stop, then install again.");
+            }
+          }
+        }
+        let stage = fs.mkdtempSync(path.join(os.tmpdir(), "ptunnel-startup-"));
+        process.platform !== "win32" && fs.chmodSync(stage, 448);
+        let windows = platform === "win32" && !termux, script = path.join(stage, windows ? "install.ps1" : "install.sh");
+        try {
+          if (profile && writePrivate(path.join(stage, "profile.json"), JSON.stringify({ version: 1, profile, stateDir: info.stateDir })), profile && !bundledBinary && writePrivate(path.join(stage, "runner"), fs.readFileSync(source)), writePrivate(path.join(stage, "definition"), (windows ? "\uFEFF" : "") + definition(info)), writePrivate(script, (windows ? "\uFEFF" : "") + installer(info, action, stage)), windows) {
+            let inner = `-NoProfile -ExecutionPolicy Bypass -File "${script}"`;
+            await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$p = Start-Process -FilePath powershell.exe -ArgumentList ${ps(inner)} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`]);
+          } else termux ? await run(filePath.join(env.PREFIX || "/data/data/com.termux/files/usr", "bin/sh"), [script]) : process.getuid?.() === 0 ? await run("/bin/sh", [script]) : platform === "darwin" ? await run("/usr/bin/osascript", ["-e", `do shell script ${JSON.stringify("/bin/sh " + sh(script))} with administrator privileges`]) : await run(gui ? "pkexec" : "sudo", ["/bin/sh", script], { interactive: !gui });
+          if (!fs.existsSync(path.join(stage, "success"))) throw new Error("Startup installation was not confirmed. No startup entry was saved.");
+        } catch (error) {
+          let detailPath = path.join(stage, "error"), detail = fs.existsSync(detailPath) ? fs.readFileSync(detailPath, "utf8") : error.message;
+          throw new Error(`Startup ${action} failed: ${detail}`);
+        } finally {
+          for (let name of ["profile.json", "runner", "definition", windows ? "install.ps1" : "install.sh", "success", "error"])
+            try {
+              fs.unlinkSync(path.join(stage, name));
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+            }
+          fs.rmdirSync(stage);
+        }
+      }
+      async function enable(input, { dryRun = !1 } = {}) {
+        let profile = validateProfile(input), id = crypto.createHash("sha256").update(profile.clientId).digest("hex").slice(0, 16), info = describe(id);
+        if (dryRun) return { ...info, executable: info.executable, credentialNote: "A separate access key copy is stored in a private service profile. No key is placed in command arguments." };
+        if (!fs.existsSync(source) || !fs.existsSync(runtime)) throw new Error("The startup runtime is missing. Reinstall PrivateTunnel or rebuild ptunnel.js first.");
+        if (platform === "win32" && !user.sid) {
+          let result = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"]);
+          if (user = { ...user, sid: result.trim() }, !/^S-1-[0-9-]+$/.test(user.sid)) throw new Error("Cannot determine your Windows user SID.");
+        }
+        await apply(info, "install", profile);
+        let manifest = load(), entry = { id, clientId: profile.clientId, tunnelType: profile.tunnelType, localHost: profile.localHost, localPort: profile.localPort, installedAt: (/* @__PURE__ */ new Date()).toISOString() };
+        return manifest.entries = manifest.entries.filter((item) => item.id !== id).concat(entry), writePrivate(manifestPath, JSON.stringify(manifest, null, 2)), { ...entry, ...info };
+      }
+      async function control(id, action) {
+        if (!["start", "stop", "remove"].includes(action)) throw new Error("Invalid startup action.");
+        let manifest = load();
+        if (!manifest.entries.find((item) => item.id === id)) throw new Error("Startup tunnel not found. Run startup status to list IDs.");
+        return await apply(describe(id), action), action === "remove" && (manifest.entries = manifest.entries.filter((item) => item.id !== id), writePrivate(manifestPath, JSON.stringify(manifest, null, 2))), !0;
+      }
+      let mutations = Promise.resolve(), serial = (operation) => (...args) => {
+        let result = mutations.then(() => operation(...args));
+        return mutations = result.catch(() => {
+        }), result;
+      };
+      return { enable: serial(enable), control: serial(control), status, describe, definition, installer, manifestPath, provider };
+    }
+    module2.exports = { createStartupManager, validateProfile, writePrivate, readJson, execute };
+  }
+});
+
 // node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
   "node_modules/ws/lib/constants.js"(exports2, module2) {
@@ -3180,11 +3489,111 @@ var require_tunnel_client = __commonJS({
   }
 });
 
+// client/startup-runner.js
+var require_startup_runner = __commonJS({
+  "client/startup-runner.js"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs"), path = require("node:path"), { spawnSync } = require("node:child_process"), { validateProfile, writePrivate, readJson } = require_startup(), TunnelClient = require_tunnel_client();
+    function sameWorker(pid, profilePath) {
+      if (!Number.isInteger(pid) || pid <= 0 || pid > 2147483647) return !1;
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        if (error.code === "ESRCH") return !1;
+        throw error;
+      }
+      if (["linux", "android"].includes(process.platform))
+        try {
+          return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(profilePath);
+        } catch (error) {
+          if (error.code === "ENOENT") return !1;
+          throw error;
+        }
+      let command = process.platform === "win32" ? "powershell.exe" : "/bin/ps", args = process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if($p){[Console]::Write($p.CommandLine)}`] : ["-p", String(pid), "-o", "command="], result = spawnSync(command, args, { encoding: "utf8", windowsHide: !0, timeout: 5e3, maxBuffer: 65536 });
+      if (result.error || result.status !== 0) throw new Error("Cannot verify the previous startup worker. Inspect runner.lock before restarting.");
+      return process.platform === "win32" ? result.stdout.toLowerCase().includes(profilePath.toLowerCase()) : result.stdout.includes(profilePath);
+    }
+    function runStartup(profilePath, { Client = TunnelClient, intervalMs = 3e3 } = {}) {
+      let data = readJson(profilePath);
+      if (data?.version !== 1 || typeof data.stateDir != "string" || !path.isAbsolute(data.stateDir)) throw new Error("Invalid startup service profile. Reinstall the startup tunnel.");
+      let profile = validateProfile(data.profile), stateDir = data.stateDir;
+      fs.mkdirSync(stateDir, { recursive: !0, mode: 448 });
+      let lockPath = path.join(stateDir, "runner.lock"), stopPath = path.join(stateDir, "stop"), lock;
+      try {
+        lock = fs.openSync(lockPath, "wx", 384);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        let previous = readJson(lockPath);
+        if (!Number.isInteger(previous?.pid)) throw new Error("Invalid startup lock. Inspect runner.lock before restarting.");
+        if (sameWorker(previous.pid, profilePath)) return null;
+        fs.unlinkSync(lockPath), lock = fs.openSync(lockPath, "wx", 384);
+      }
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: (/* @__PURE__ */ new Date()).toISOString() })), fs.closeSync(lock);
+      let stopped = !1, timer, logPath = path.join(stateDir, "service.log"), state = { status: "connecting", url: "", error: null }, clean = (value) => String(value || "").replaceAll(profile.token, "[hidden]").replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 2e3);
+      function save() {
+        writePrivate(path.join(stateDir, "status.json"), JSON.stringify({ ...state, pid: process.pid, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }));
+      }
+      function log(message) {
+        try {
+          fs.existsSync(logPath) && fs.statSync(logPath).size > 1024 * 1024 && fs.renameSync(logPath, logPath + ".1"), fs.appendFileSync(logPath, `${(/* @__PURE__ */ new Date()).toISOString()} ${clean(message)}
+`, { mode: 384 });
+        } catch {
+        }
+      }
+      function update(next) {
+        state = { ...state, ...next }, save(), log(`${state.status} ${state.error || state.url}`);
+      }
+      let client = new Client({
+        ...profile,
+        onConnected: ({ url }) => {
+          stopped || update({ status: "online", url: clean(url), error: null });
+        },
+        onDisconnected: () => {
+          stopped || update({ status: "reconnecting", url: "" });
+        },
+        onError: (error) => {
+          if (stopped) return;
+          let terminal = ["EUNAUTHORIZED", "ETUNNELSETUP"].includes(error.code) || !client.shouldReconnect;
+          update({ status: terminal ? "error" : "reconnecting", error: clean(error.message), url: "" }), terminal && stop(!0);
+        }
+      });
+      function stop(failed = !1) {
+        if (stopped) return;
+        stopped = !0, clearInterval(timer), process.removeListener("SIGINT", signalStop), process.removeListener("SIGTERM", signalStop), client.disconnect(), failed || (state = { status: "stopped", url: "", error: null }), save(), fs.unlinkSync(lockPath);
+        try {
+          fs.unlinkSync(stopPath);
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+        let timeout = setTimeout(() => client.ws?.terminate(), 1500);
+        timeout.unref(), client.ws?.once("close", () => clearTimeout(timeout)), process.exitCode = 0;
+      }
+      let signalStop = () => stop();
+      process.once("SIGINT", signalStop), process.once("SIGTERM", signalStop), timer = setInterval(() => {
+        try {
+          fs.existsSync(stopPath) ? stop() : save();
+        } catch (error) {
+          log(error.message), stop(!0);
+        }
+      }, intervalMs);
+      try {
+        save(), client.connect();
+      } catch (error) {
+        throw state = { status: "error", url: "", error: clean(error.message) }, stop(!0), error;
+      }
+      return { stop, client, get state() {
+        return state;
+      } };
+    }
+    module2.exports = { runStartup };
+  }
+});
+
 // client/cli.js
 var require_cli = __commonJS({
   "client/cli.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs"), path = require("node:path"), os = require("node:os"), net = require("node:net"), crypto = require("node:crypto"), readline = require("node:readline/promises"), { Writable } = require("node:stream"), { requireSecureServerWebSocketUrl } = require_server_url(), TunnelUI = require_ui();
+    var fs = require("node:fs"), path = require("node:path"), os = require("node:os"), net = require("node:net"), crypto = require("node:crypto"), readline = require("node:readline/promises"), { Writable } = require("node:stream"), { requireSecureServerWebSocketUrl } = require_server_url(), TunnelUI = require_ui(), { createStartupManager } = require_startup();
     function configPath() {
       return path.resolve(process.env.PTUNNEL_CONFIG_PATH || path.join(os.homedir(), ".ptunnel"));
     }
@@ -3278,6 +3687,8 @@ var require_cli = __commonJS({
         if (arg === "--help" || arg === "-h") options.help = !0;
         else if (arg === "--root") options.root = !0;
         else if (arg === "--plain") options.plain = !0;
+        else if (arg === "--startup") options.startup = !0;
+        else if (arg === "--dry-run") options.dryRun = !0;
         else if (["--server", "--token", "--domain"].includes(arg)) {
           let value = argv[++i];
           if (!value || value.startsWith("-")) throw new Error(`${arg} requires a value.`);
@@ -3359,6 +3770,13 @@ PrivateTunnel · Termux / Node.js 22.12+
   node ptunnel.js setup           เปลี่ยนค่าที่บันทึก / Edit saved settings
   node ptunnel.js http 3000        แชร์เว็บไซต์ / Share HTTP
   node ptunnel.js tcp 25565        แชร์ TCP / Share TCP
+  node ptunnel.js tcp 22 --startup เริ่มตั้งแต่บูต ก่อนล็อกอิน / Install boot service
+  node ptunnel.js startup status   ดูบริการ / List boot services and their IDs
+  node ptunnel.js startup install  ติดตั้งจากรายการล่าสุด / Use saved tunnel
+  node ptunnel.js startup stop ID  หยุดชั่วคราว / Stop until next boot
+  node ptunnel.js startup start ID เริ่มบริการ / Start service now
+  node ptunnel.js startup remove ID|all  ถอนการเริ่มอัตโนมัติ / Uninstall
+  --startup --dry-run             Preview installation without making changes
   node ptunnel.js http localhost:3000 --domain apps.example.com [--root]
   node ptunnel.js status          ดูค่าที่บันทึก / Show profile (key hidden)
   node ptunnel.js reset           ล้างการตั้งค่า / Clear saved settings
@@ -3391,13 +3809,48 @@ PrivateTunnel · Termux / Node.js 22.12+
       process.once("SIGINT", interrupt), process.once("SIGTERM", interrupt), ui.init(), client.connect();
     }
     async function main(argv = process.argv.slice(2)) {
+      if (argv[0] === "startup" && argv[1] === "run") {
+        if (argv.length !== 4 || argv[2] !== "--profile" || !path.isAbsolute(argv[3])) throw new Error("Internal startup runner requires an absolute --profile path.");
+        require_startup_runner().runStartup(argv[3]);
+        return;
+      }
       let { options, positional } = parseArgs(argv);
       if (options.help) {
         printHelp();
         return;
       }
-      let filename = configPath(), config = loadConfig(filename), command = positional[0], profileCommand = ["status", "reset", "setup", "init"].includes(command);
+      let filename = configPath(), config = loadConfig(filename), startup = createStartupManager({ configPath: filename }), command = positional[0];
+      if (command === "startup") {
+        if (options.server || options.token || options.domain || options.root || options.startup) throw new Error("Startup commands use saved profiles. Configure the server and target first.");
+        let action = positional[1] || "status";
+        if (action === "status" || action === "list") {
+          if (positional.length > 2) throw new Error("startup status takes no arguments.");
+          let entries2 = startup.status();
+          entries2.length || console.log("No boot tunnels. Run node ptunnel.js tcp 22 --startup.");
+          for (let entry of entries2)
+            console.log(`${entry.id}  ${entry.tunnelType} ${entry.localHost}:${entry.localPort}  ${entry.installed ? entry.status : "installation missing"}`), entry.url && console.log(`Public: ${entry.url}`), entry.error && console.log(`Error: ${entry.error}`), console.log(`Provider: ${entry.provider}
+Log: ${entry.logPath}
+${entry.note}`);
+          return;
+        }
+        if (action === "install" && positional.length === 2) {
+          let profile2 = savedTunnel(config);
+          if (!profile2 || !config.clientId) throw new Error("Save a tunnel first, e.g. node ptunnel.js tcp 22.");
+          let result = await startup.enable({ ...connection(config.serverUrl, config.token), ...profile2, clientId: buildTunnelProfileClientId(config.clientId, profile2) }, { dryRun: options.dryRun });
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (!["start", "stop", "remove"].includes(action) || positional.length > 3 || options.dryRun) throw new Error("Use startup status, install [--dry-run], start ID, stop ID or remove ID|all.");
+        let entries = startup.status(), id = positional[2] || (entries.length === 1 ? entries[0].id : ""), targets = id === "all" && action === "remove" ? entries.map((entry) => entry.id) : [id];
+        if (!id) throw new Error("Choose a tunnel ID from startup status.");
+        for (let target of targets) await startup.control(target, action);
+        console.log(`Startup ${action} complete.`);
+        return;
+      }
+      if (options.dryRun && !options.startup) throw new Error("--dry-run requires --startup or startup install.");
+      let profileCommand = ["status", "reset", "setup", "init"].includes(command);
       if (profileCommand && positional.length !== 1) throw new Error(`${command} does not accept extra arguments.`);
+      if ((profileCommand || options.server || options.token) && options.startup) throw new Error("--startup belongs to a tunnel command, e.g. tcp 22 --startup.");
       let settingConnection = options.server !== void 0 || options.token !== void 0;
       if (settingConnection && command && command !== "init")
         throw new Error("Save --server and --token using init first, then run your tunnel command.");
@@ -3411,6 +3864,7 @@ Access key: ${config.token ? "(saved, hidden)" : "(not set)"}`);
         return;
       }
       if (command === "reset") {
+        if (startup.status().length) throw new Error("Remove boot services with startup remove all before resetting the saved profile.");
         delete config.serverUrl, delete config.token, delete config.lastTunnel, saveConfig(filename, config), console.log("Profile reset. Run node ptunnel.js to set up again.");
         return;
       }
@@ -3431,7 +3885,18 @@ Access key: ${config.token ? "(saved, hidden)" : "(not set)"}`);
         if (options.domain || options.root) throw new Error("Specify http <port> with --domain or --root.");
         (!config.serverUrl || !config.token || !config.lastTunnel) && (config = await configure(config)), profile = savedTunnel(config);
       }
-      Object.assign(config, connection(config.serverUrl, config.token), { lastTunnel: profile }), saveConfig(filename, config), console.log(`Saved profile: ${filename}`), startTunnel(config, profile, options);
+      if (Object.assign(config, connection(config.serverUrl, config.token), { lastTunnel: profile }), options.startup) {
+        let serviceProfile = { ...connection(config.serverUrl, config.token), ...profile, clientId: buildTunnelProfileClientId(config.clientId, profile) };
+        options.dryRun || saveConfig(filename, config);
+        let result = await startup.enable(serviceProfile, { dryRun: options.dryRun });
+        console.log(options.dryRun ? "Startup installation preview:" : "Boot tunnel installed and started in the background."), console.log(`ID: ${result.id}
+Provider: ${result.provider}
+Profile: ${result.profilePath}
+Log: ${result.logPath}
+${result.note}`), console.log("The boot service uses a separate private access-key copy. Re-run this command to update its settings.");
+        return;
+      }
+      saveConfig(filename, config), console.log(`Saved profile: ${filename}`), startTunnel(config, profile, options);
     }
     module2.exports = { main, Prompt, parseArgs, parseTarget, tunnelProfile, savedTunnel, connection, buildTunnelProfileClientId, loadConfig, saveConfig, configure };
   }

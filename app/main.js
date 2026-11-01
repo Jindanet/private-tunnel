@@ -8,6 +8,7 @@ const { getExternalWebUrl, validateTunnelInput } = require('./security');
 const WebSocket = require('ws');
 const { normalizeServerWebSocketUrl, requireSecureServerWebSocketUrl } = require('../client/server-url');
 const { createCredentialStore } = require('./credential-store');
+const { createStartupManager } = require('../client/startup');
 const { MSG, sendControl } = require('../shared/protocol');
 
 const CONFIG_PATH = path.resolve(
@@ -24,6 +25,33 @@ const credentialStore = createCredentialStore({
 });
 let config = { token: null, tunnels: [] };
 let credentialStorageError = null;
+let startupManager = null;
+let startupPoll = null;
+
+function bootManager() {
+  if (!startupManager) startupManager = createStartupManager({ configPath: CONFIG_PATH, channel: 'desktop', gui: true,
+    electronNode: true, bundledBinary: false, runtime: process.env.APPIMAGE || process.execPath,
+    bundlePath: path.join(__dirname, '..', 'ptunnel.js') });
+  return startupManager;
+}
+
+function bootEntry(tunnel) {
+  return tunnel && bootManager().status().find((entry) => entry.clientId === tunnel.clientId);
+}
+
+function pollBootServices() {
+  if (isQuitting) return;
+  try {
+    const entries = bootManager().status();
+    for (const tunnel of config.tunnels) {
+      const entry = entries.find((item) => item.clientId === tunnel.clientId);
+      if (entry) mainWindow?.webContents.send('tunnel-status', { id: tunnel.id, status: entry.installed ? entry.status : 'error',
+        url: entry.url, error: entry.installed ? entry.error : 'Boot service files are missing. Turn startup off, then on to reinstall.' });
+    }
+  } catch { /* The startup controls report manifest errors when used. */ }
+  startupPoll = setTimeout(pollBootServices, 3000);
+  startupPoll.unref?.();
+}
 
 function saveConfig(nextConfig) {
   const result = credentialStore.save(nextConfig);
@@ -283,12 +311,14 @@ app.whenReady().then(() => {
   }
   createWindow();
   createTray();
+  pollBootServices();
 });
 
 app.on('window-all-closed', () => {});
 
 app.on('before-quit', () => {
   isQuitting = true;
+  clearTimeout(startupPoll);
   for (const [, client] of tunnelInstances) {
     try { client.disconnect(); } catch {}
   }
@@ -296,9 +326,37 @@ app.on('before-quit', () => {
 
 handleTrusted('get-config', () => ({
   ...config,
+  tunnels: config.tunnels.map((tunnel) => {
+    let entry;
+    try { entry = bootEntry(tunnel); } catch { /* Keep ordinary profiles editable. */ }
+    return { ...tunnel, startup: Boolean(entry), startupState: entry ? { status: entry.status, url: entry.url, error: entry.error } : null };
+  }),
   configPath: CONFIG_PATH,
   credentialStorageError,
 }));
+
+handleTrusted('set-tunnel-startup', async (_, payload) => {
+  const tunnel = config.tunnels.find((item) => item.id === payload?.id);
+  if (!tunnel || typeof payload.enabled !== 'boolean') return { error: 'Choose a saved tunnel and startup setting.' };
+  try {
+    validateTunnelInput(tunnel);
+    const entry = bootEntry(tunnel);
+    if (!payload.enabled) {
+      if (entry) await bootManager().control(entry.id, 'remove');
+      mainWindow?.webContents.send('tunnel-status', { id: tunnel.id, status: 'stopped', url: '' });
+      return { ok: true, enabled: false };
+    }
+    if (!config.serverUrl || !config.token || credentialStorageError) return { error: 'Save and unlock the server profile before enabling startup.' };
+    pendingStarts.delete(tunnel.id);
+    tunnelInstances.get(tunnel.id)?.disconnect();
+    tunnelInstances.delete(tunnel.id);
+    mainWindow?.webContents.send('tunnel-status', { id: tunnel.id, status: 'stopped', url: '' });
+    const installed = await bootManager().enable({ serverUrl: config.serverUrl, token: config.token,
+      tunnelType: tunnel.type, localHost: 'localhost', localPort: tunnel.port, clientId: tunnel.clientId,
+      publishDomain: tunnel.publishDomain, publishMode: tunnel.publishMode, desiredSubdomain: tunnel.desiredSubdomain });
+    return { ok: true, enabled: true, note: installed.note };
+  } catch (error) { return { error: error.message }; }
+});
 
 handleTrusted('validate-server-profile', (_, payload) => {
   const result = validateServerProfileInput(payload && payload.serverUrl, payload && payload.token);
@@ -371,7 +429,7 @@ handleTrusted('add-tunnel', (_, payload) => {
   return tunnel;
 });
 
-handleTrusted('delete-tunnel', (_, id) => {
+function deleteSavedTunnel(id) {
   pendingStarts.delete(id);
   const client = tunnelInstances.get(id);
   if (client) {
@@ -381,11 +439,23 @@ handleTrusted('delete-tunnel', (_, id) => {
   config.tunnels = config.tunnels.filter((tunnel) => tunnel.id !== id);
   saveConfig(config);
   return true;
+}
+
+handleTrusted('delete-tunnel', (_, id) => {
+  const tunnel = config.tunnels.find((item) => item.id === id);
+  const entry = bootEntry(tunnel);
+  if (entry) return bootManager().control(entry.id, 'remove').then(() => deleteSavedTunnel(id));
+  return deleteSavedTunnel(id);
 });
 
 handleTrusted('start-tunnel', async (_, id) => {
   const tunnel = config.tunnels.find((item) => item.id === id);
   if (!tunnel) return { error: 'Tunnel not found' };
+  const entry = bootEntry(tunnel);
+  if (entry) {
+    try { await bootManager().control(entry.id, 'start'); return { ok: true }; }
+    catch (error) { return { error: error.message }; }
+  }
   try { validateTunnelInput(tunnel); } catch (error) { return { error: error.message }; }
   if (!config.serverUrl || !config.token) {
     return { error: 'Save the server profile first. This GUI requires both server URL and token.' };
@@ -449,6 +519,11 @@ handleTrusted('start-tunnel', async (_, id) => {
 });
 
 handleTrusted('stop-tunnel', (_, id) => {
+  const entry = bootEntry(config.tunnels.find((item) => item.id === id));
+  if (entry) return bootManager().control(entry.id, 'stop').then(() => {
+    mainWindow?.webContents.send('tunnel-status', { id, status: 'stopped', url: '' });
+    return true;
+  });
   pendingStarts.delete(id);
   const client = tunnelInstances.get(id);
   if (client) {
