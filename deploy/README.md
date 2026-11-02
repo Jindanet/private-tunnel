@@ -77,7 +77,7 @@ sudo systemctl status private-tunnel
 sudo journalctl -u private-tunnel -n 50
 ```
 
-For a first installation, leave `TUNNEL_TOKEN` empty to generate a random 32-byte key. The initial control root is `/_private-tunnel`; `.env` does not configure it. Read `/var/lib/private-tunnel/admin-bootstrap.txt` privately, sign in through the TLS admin hostname and change the password. The file is removed on rotation. Get the generated client key from dashboard Settings.
+For a first installation, leave `TUNNEL_TOKEN` empty; the generated legacy shared key is unused by default. The initial control root is `/_private-tunnel`; `.env` does not configure it. Read `/var/lib/private-tunnel/admin-bootstrap.txt` privately, sign in through the TLS admin hostname and change the password. The file is removed on rotation. Create separate named client keys in dashboard Settings, choosing Desktop / CLI or ESP device as appropriate. Device issuance also reveals a separate visitor password.
 
 A nonempty `TUNNEL_TOKEN` must be 32–4096 visible ASCII characters without whitespace and cannot begin with `your-`, `your_`, `replace-`, `replace_`, `change-`, `change_`, `example-` or `example_` (case insensitive). Invalid environment values stop startup even when a key is stored. Choose a cryptographically random key; the format check alone does not establish entropy.
 

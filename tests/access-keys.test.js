@@ -42,6 +42,35 @@ test('issued client keys survive restart while the registry and listings contain
   }
 });
 
+test('device secrets persist only as hashes and rotate/revoke together across restarts', async (t) => {
+  const { filePath } = location(t);
+  let store = createAccessKeyStore({ filePath });
+  const issued = await store.issue('sensor', { type: 'device' });
+  const desktop = await store.issue('desktop');
+  assert.deepEqual(issued.key.type, 'device');
+  const raw = fs.readFileSync(filePath, 'utf8');
+  assert.equal(raw.includes(issued.token), false);
+  assert.equal(raw.includes(issued.visitorToken), false);
+  assert.equal(JSON.stringify(store.list()).includes('visitorTokenHash'), false);
+  store = createAccessKeyStore({ filePath });
+  assert.deepEqual(store.authenticate(issued.token), issued.key);
+  assert.equal(store.authenticateVisitor(issued.key.id, issued.visitorToken), true);
+  assert.equal(store.authenticateVisitor(issued.key.id, issued.token), false);
+  assert.equal(store.authenticateVisitor(desktop.key.id, issued.visitorToken), false);
+  const rotated = await store.rotate(issued.key.id);
+  assert.equal(rotated.key.id, issued.key.id);
+  assert.notEqual(rotated.visitorToken, issued.visitorToken);
+  store = createAccessKeyStore({ filePath });
+  assert.equal(store.authenticateVisitor(issued.key.id, issued.visitorToken), false);
+  assert.equal(store.authenticateVisitor(issued.key.id, rotated.visitorToken), true);
+  await store.revoke(issued.key.id);
+  store = createAccessKeyStore({ filePath });
+  assert.equal(store.authenticateVisitor(issued.key.id, rotated.visitorToken), false);
+  assert.equal(store.authenticate(rotated.token), null);
+  assert.deepEqual(store.authenticate(desktop.token), desktop.key);
+  await assert.rejects(store.issue('bad type', { type: 'unknown' }), { code: 'EACCESSKEYINPUT' });
+});
+
 test('rotation preserves the owner and revocation persists without affecting other clients', async (t) => {
   const { filePath } = location(t);
   const store = createAccessKeyStore({ filePath });
