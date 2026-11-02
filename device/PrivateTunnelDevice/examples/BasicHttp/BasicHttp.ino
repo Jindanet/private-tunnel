@@ -17,7 +17,7 @@ void status(const DeviceRequest& request, DeviceResponse& response) {
   }
   char body[128];
   snprintf(body,sizeof(body),"{\"online\":true,\"uptime_ms\":%lu,\"free_heap\":%u}",
-    static_cast<unsigned long>(millis()),ESP.getFreeHeap());
+    static_cast<unsigned long>(millis()),unsigned(ESP.getFreeHeap()));
   response.json(200,body);
 }
 void setup() {

@@ -83,7 +83,7 @@ void setup() {
   connection.caCertificate=settings.ca;connection.clientId=identity;connection.domain=settings.domain;connection.subdomain=settings.subdomain;
   tunnel.onHttp("/status",[](const DeviceRequest& req,DeviceResponse& res){
     if(strcmp(req.method,"GET")&&strcmp(req.method,"HEAD")){res.json(405,"{\"error\":\"GET required\"}");return;}
-    char body[96];snprintf(body,sizeof(body),"{\"online\":true,\"free_heap\":%u}",ESP.getFreeHeap());res.json(200,body);
+    char body[96];snprintf(body,sizeof(body),"{\"online\":true,\"free_heap\":%u}",unsigned(ESP.getFreeHeap()));res.json(200,body);
   });
   if(!tunnel.begin(connection))Serial.println(tunnel.lastError());
   Serial.printf("Protocol object: %u bytes; saved settings: %u bytes\n",unsigned(sizeof(tunnel)),unsigned(sizeof(settings)));

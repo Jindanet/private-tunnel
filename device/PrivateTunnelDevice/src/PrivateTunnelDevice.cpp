@@ -97,7 +97,8 @@ bool PrivateTunnelDevice::connect() {
       line[n++]=char(ch);
     }
     if(millis()-started>=5000||!socket.connected()){disconnect("WebSocket handshake timed out");return false;}
-    if(n&&line[n-1]=='\r')--n;line[n]=0;
+    if(n&&line[n-1]=='\r')--n;
+    line[n]=0;
     if(!count) {
       if(strcmp(line,"HTTP/1.1 101 Switching Protocols")) {
         bool auth=strstr(line," 401 ")||strstr(line," 403 ");
@@ -168,10 +169,11 @@ void PrivateTunnelDevice::receivePacket(const uint8_t* p,size_t n) {
   if(type==END&&!requestEnded&&!n) {
     requestEnded=true;DeviceResponse response(*this);
     for(size_t i=0;i<routeCount;++i)if(!strcmp(request.path,routes[i].path)){routes[i].handler(request,response);break;}
-    if(!responding)response.json(404,"{\"error\":\"route not found\"}");return;
+    if(!responding)response.json(404,"{\"error\":\"route not found\"}");
+    return;
   }
   if(type==CREDIT&&responding&&n==2&&read16(p)&&txCredit+read16(p)<=WINDOW){txCredit+=read16(p);return;}
-  if(type==CANCEL&&!n){resetStream();return;}
+  if(type==ptdevice::CANCEL&&!n){resetStream();return;}
   disconnect("Device stream limit or ordering violation",true);
 }
 bool PrivateTunnelDevice::respond(uint16_t status,const char* type,const uint8_t* data,size_t n,bool flash) {
