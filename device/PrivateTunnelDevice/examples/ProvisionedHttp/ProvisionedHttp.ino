@@ -20,6 +20,7 @@ static_assert(sizeof(Settings)<=4096,"Settings must fit ESP8266 EEPROM");
 PrivateTunnelDevice tunnel;
 DeviceConfig connection;
 char identity[32];
+char setupNonce[33];
 bool portal=false;
 uint32_t portalStarted=0;
 SetupServer* setupServer=nullptr;
@@ -40,20 +41,37 @@ bool copyField(const char* name,char* target,size_t size) {
   if(value.length()>=size)return false;
   memcpy(target,value.c_str(),value.length()+1);return true;
 }
+bool openSettings() {
+  EEPROM.begin(sizeof(Settings)); // ESP8266 returns void; ESP32 returns bool.
+  return EEPROM.length()>=sizeof(Settings);
+}
 void startPortal() {
   portal=true;portalStarted=millis();WiFi.mode(WIFI_AP);
-  char password[17];
+  char password[19];
 #if defined(ESP8266)
   uint32_t first=ESP.random(),second=ESP.random();
 #else
   uint32_t first=esp_random(),second=esp_random();
 #endif
-  snprintf(password,sizeof(password),"pt%06lx%06lx",static_cast<unsigned long>(first&0xffffff),static_cast<unsigned long>(second&0xffffff));
+  snprintf(password,sizeof(password),"pt%08lx%08lx",static_cast<unsigned long>(first),static_cast<unsigned long>(second));
+  for(size_t i=0;i<4;++i){
+#if defined(ESP8266)
+    uint32_t word=ESP.random();
+#else
+    uint32_t word=esp_random();
+#endif
+    snprintf(setupNonce+i*8,9,"%08lx",static_cast<unsigned long>(word));
+  }
   if(!WiFi.softAP("PrivateTunnel-Setup",password)){Serial.println("Could not start setup Wi-Fi");return;}
   Serial.printf("Setup Wi-Fi: PrivateTunnel-Setup\nPassword: %s\nOpen http://192.168.4.1/ (expires in 5 minutes)\n",password);
   setupServer=new SetupServer(80);
-  setupServer->on("/",HTTP_GET,[]{setupServer->sendHeader("Cache-Control","no-store");setupServer->send_P(200,"text/html",FORM);});
+  setupServer->on("/",HTTP_GET,[]{
+    String page=FPSTR(FORM);
+    page.replace("</form>",String("<input type=\"hidden\" name=\"nonce\" value=\"")+setupNonce+"\"></form>");
+    setupServer->sendHeader("Cache-Control","no-store");setupServer->send(200,"text/html",page);
+  });
   setupServer->on("/save",HTTP_POST,[]{
+    if(setupServer->arg("nonce")!=setupNonce){setupServer->send(403,"text/plain","Setup expired. Reload the setup page.");return;}
     if(!copyField("ssid",settings.ssid,sizeof(settings.ssid))||!copyField("password",settings.password,sizeof(settings.password))
       ||!copyField("host",settings.host,sizeof(settings.host))||!copyField("path",settings.path,sizeof(settings.path))
       ||!copyField("key",settings.key,sizeof(settings.key))||!copyField("domain",settings.domain,sizeof(settings.domain))
@@ -62,7 +80,7 @@ void startPortal() {
       ||settings.path[0]!='/'||!strstr(settings.ca,"-----BEGIN CERTIFICATE-----")) {
       setupServer->send(400,"text/plain","Invalid or oversized settings. Go back and check each field.");return;
     }
-    if(!EEPROM.begin(sizeof(Settings))){setupServer->send(500,"text/plain","Settings storage is unavailable.");return;}
+    if(!openSettings()){setupServer->send(500,"text/plain","Settings storage is unavailable.");return;}
     settings.magic=0x50544431;settings.checksum=checksum();EEPROM.put(0,settings);
     bool saved=EEPROM.commit();EEPROM.end();
     if(!saved){setupServer->send(500,"text/plain","Settings could not be saved. Retry setup.");return;}
@@ -76,7 +94,7 @@ void setup() {
   Serial.println("Press BOOT/FLASH now within 3 seconds to configure Wi-Fi (release during reset).");
   bool configure=false;uint32_t started=millis();
   while(millis()-started<3000){if(digitalRead(0)==LOW)configure=true;delay(10);}
-  if(EEPROM.begin(sizeof(Settings))){EEPROM.get(0,settings);EEPROM.end();}
+  if(openSettings()){EEPROM.get(0,settings);EEPROM.end();}
   if(configure||settings.magic!=0x50544431||settings.checksum!=checksum()||!terminated()) {startPortal();return;}
   WiFi.mode(WIFI_STA);WiFi.begin(settings.ssid,settings.password);
   configTime(0,0,"pool.ntp.org","time.cloudflare.com");
