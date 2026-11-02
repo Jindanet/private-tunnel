@@ -71,7 +71,7 @@ async function assets() {
   for (const name of releaseAssetNames('1.2.0')) fs.writeFileSync(path.join('release-artifacts', name), 'fixture asset');
 }
 
-test('publishing requires all six assets, writes checksums and exposes only a complete draft', async (t) => {
+test('publishing requires all assets including the Arduino library and exposes only a complete draft', async (t) => {
   const f = fixture(t);
   const { run, releaseAssetNames } = await helpers;
   await assets();
@@ -88,7 +88,7 @@ test('publishing requires all six assets, writes checksums and exposes only a co
   assert.ok(calls[0].includes(SHA));
   assert.ok(calls[2].includes('--draft=false') && calls[2].includes('--latest'));
   const lines = fs.readFileSync('release-artifacts/SHA256SUMS.txt', 'utf8').trim().split('\n');
-  assert.equal(lines.length, 6);
+  assert.equal(lines.length, releaseAssetNames('1.2.0').length);
   assert.ok(lines.every((line) => /^[a-f0-9]{64}  /.test(line)));
 });
 
@@ -114,7 +114,7 @@ test('only the final publish job can write, and it waits for every platform', ()
   assert.deepEqual(workflow.on.push.branches, ['main']);
   assert.equal(workflow.permissions.contents, 'read');
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
-  assert.deepEqual(workflow.jobs.publish.needs, ['plan', 'source', 'windows-desktop', 'macos-cli']);
+  assert.deepEqual(workflow.jobs.publish.needs, ['plan', 'source', 'windows-desktop', 'macos-cli', 'firmware']);
   for (const [name, job] of Object.entries(workflow.jobs)) {
     assert.equal(job.permissions?.contents || workflow.permissions.contents, name === 'publish' ? 'write' : 'read');
     for (const step of job.steps) if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);

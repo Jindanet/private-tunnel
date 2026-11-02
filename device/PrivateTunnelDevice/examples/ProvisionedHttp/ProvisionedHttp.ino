@@ -62,8 +62,10 @@ void startPortal() {
       ||settings.path[0]!='/'||!strstr(settings.ca,"-----BEGIN CERTIFICATE-----")) {
       setupServer->send(400,"text/plain","Invalid or oversized settings. Go back and check each field.");return;
     }
+    if(!EEPROM.begin(sizeof(Settings))){setupServer->send(500,"text/plain","Settings storage is unavailable.");return;}
     settings.magic=0x50544431;settings.checksum=checksum();EEPROM.put(0,settings);
-    if(!EEPROM.commit()){setupServer->send(500,"text/plain","Settings could not be saved. Retry setup.");return;}
+    bool saved=EEPROM.commit();EEPROM.end();
+    if(!saved){setupServer->send(500,"text/plain","Settings could not be saved. Retry setup.");return;}
     setupServer->sendHeader("Cache-Control","no-store");setupServer->send(200,"text/plain","Saved. Rebooting. Reconnect to your usual Wi-Fi and watch Serial for the public URL.");
     delay(700);ESP.restart();
   });
@@ -74,7 +76,7 @@ void setup() {
   Serial.println("Press BOOT/FLASH now within 3 seconds to configure Wi-Fi (release during reset).");
   bool configure=false;uint32_t started=millis();
   while(millis()-started<3000){if(digitalRead(0)==LOW)configure=true;delay(10);}
-  EEPROM.begin(sizeof(Settings));EEPROM.get(0,settings);
+  if(EEPROM.begin(sizeof(Settings))){EEPROM.get(0,settings);EEPROM.end();}
   if(configure||settings.magic!=0x50544431||settings.checksum!=checksum()||!terminated()) {startPortal();return;}
   WiFi.mode(WIFI_STA);WiFi.begin(settings.ssid,settings.password);
   configTime(0,0,"pool.ntp.org","time.cloudflare.com");

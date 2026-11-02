@@ -1,4 +1,6 @@
-# Deployment guide / คู่มือผู้ดูแล
+# Deployment runbook
+
+For the documentation overview, use the [English server guide](../docs/en/server.md) or [Thai server guide](../docs/th/server.md).
 
 This guide assumes one trusted server owner, a Linux server or Windows host, and Nginx on the **same machine** as PrivateTunnel. Read the [current limitations](../README.md#security-and-current-limitations) before offering tunnels to other people. The templates are starting points; no live service or firewall is changed by this repository.
 

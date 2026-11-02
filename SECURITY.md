@@ -1,6 +1,6 @@
 # Security reporting
 
-Security fixes target the current 1.2.x source line. Upgrade older builds before relying on the current defaults; package metadata alone does not identify a published release.
+Security fixes target the current 1.4.x source line. Upgrade older builds before relying on the current defaults; package metadata alone does not identify a published release. Native device support is experimental and still requires physical-board validation.
 
 Report suspected vulnerabilities privately using GitHub's private vulnerability reporting for this repository if it is enabled. If no private channel is available, open an issue requesting a private reporting contact without including exploit details, credentials, traffic payloads or personal data. No guaranteed response time or bounty is promised.
 

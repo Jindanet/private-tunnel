@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 — 2026-11-02
+
+- Add experimental native Arduino clients for ESP32 and ESP8266, without Node.js or a third-party WebSocket dependency. Use verified TLS, bounded binary frames, credit, one active HTTP callback and a 1 KiB request-body limit.
+- Add basic and Wi-Fi provisioning examples with saved settings, automatic boot connection, bounded retries, heartbeat/cancellation and flash response streaming. Keep TLS memory costs and unverified hardware reliability explicit.
+- Add a scoped device transport adapter that reuses server host ownership and logging while retaining desktop v4 policy. Enforce device-only keys and a separate visitor password, shown once and rotated together.
+- Compile both firmware examples on pinned ESP32/ESP8266 cores in GitHub Actions; test native parser behavior and actual gateway visitor auth, uploads, response credit, overload and key rotation.
+- Rewrite the documentation as English and Thai overview READMEs with separate guides for installation, CLI, boot services, devices, server deployment, configuration, architecture, troubleshooting and development. Reuse existing screenshots without launching the app locally.
+- Publish an Arduino-installable library ZIP and gate releases on firmware compilation as well as desktop/CLI checks.
+
 ## 1.3.0 — 2026-11-02
 
 - Add boot startup before sign-in for CLI and GUI: `ptunnel tcp 22 --startup` or the per-tunnel desktop toggle installs Windows boot tasks, Linux systemd services, macOS LaunchDaemons, or Termux:Boot scripts. Request OS elevation during installation and use unprivileged service identities.

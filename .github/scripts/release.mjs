@@ -38,7 +38,8 @@ export function releaseAssetNames(version) {
   stableVersion(version);
   return [`PrivateTunnel-v${version}-source.zip`, `PrivateTunnel-v${version}-windows-x64-unsigned.zip`,
     `ptunnel-v${version}-windows-x64.exe`, `ptunnel-v${version}-linux-x64`,
-    `ptunnel-v${version}-macos-x64`, `ptunnel-v${version}-macos-arm64`];
+    `ptunnel-v${version}-macos-x64`, `ptunnel-v${version}-macos-arm64`,
+    `PrivateTunnelDevice-v${version}-arduino.zip`];
 }
 
 export function verifyAssets(directory, version) {

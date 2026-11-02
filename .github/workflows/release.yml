@@ -62,6 +62,7 @@ jobs:
         run: |
           mkdir -p release-artifacts
           git archive --format=zip --prefix="PrivateTunnel-$RELEASE_VERSION/" --output="release-artifacts/PrivateTunnel-v$RELEASE_VERSION-source.zip" HEAD
+          git archive --format=zip --prefix=PrivateTunnelDevice/ --output="release-artifacts/PrivateTunnelDevice-v$RELEASE_VERSION-arduino.zip" HEAD:device/PrivateTunnelDevice
           cp dist/ptunnel-linux "release-artifacts/ptunnel-v$RELEASE_VERSION-linux-x64"
           dist/ptunnel-linux --help
           test "$(dist/ptunnel-linux --version)" = "$RELEASE_VERSION"
@@ -158,8 +159,45 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  firmware:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - core: esp32:esp32@3.3.12
+            fqbn: esp32:esp32:esp32
+            index: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          - core: esp8266:esp8266@3.1.2
+            fqbn: esp8266:esp8266:nodemcuv2
+            index: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile both board examples and exercise native parser
+        env:
+          CORE: ${{ matrix.core }}
+          FQBN: ${{ matrix.fqbn }}
+          BOARD_INDEX: ${{ matrix.index }}
+        run: |
+          curl --fail --location https://downloads.arduino.cc/arduino-cli/arduino-cli_1.5.1_Linux_64bit.tar.gz -o /tmp/arduino-cli.tar.gz
+          tar -xzf /tmp/arduino-cli.tar.gz -C /tmp arduino-cli
+          /tmp/arduino-cli core update-index --additional-urls "$BOARD_INDEX"
+          /tmp/arduino-cli core install "$CORE" --additional-urls "$BOARD_INDEX"
+          for example in BasicHttp ProvisionedHttp; do
+            /tmp/arduino-cli compile --fqbn "$FQBN" --library device/PrivateTunnelDevice --warnings all "device/PrivateTunnelDevice/examples/$example"
+          done
+          g++ -std=c++17 -Wall -Wextra -Werror tests/device-wire.cpp -o /tmp/device-wire
+          /tmp/device-wire
+          g++ -std=c++17 -Wall -Wextra -Werror -DESP32 -Itests/device-stubs tests/device-client.cpp device/PrivateTunnelDevice/src/PrivateTunnelDevice.cpp -o /tmp/device-client
+          /tmp/device-client
+
   publish:
-    needs: [plan, source, windows-desktop, macos-cli]
+    needs: [plan, source, windows-desktop, macos-cli, firmware]
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
