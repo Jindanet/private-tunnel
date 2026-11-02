@@ -437,6 +437,118 @@ ${content.join(`\r
   }
 });
 
+// package.json
+var require_package = __commonJS({
+  "package.json"(exports2, module2) {
+    module2.exports = {
+      name: "privatetunnel",
+      version: "1.3.0",
+      description: "ngrok-like tunnel system - expose local servers to the internet",
+      author: "Jindanet",
+      license: "MIT",
+      engines: {
+        node: ">=22.12.0"
+      },
+      private: !0,
+      bin: {
+        ptunnel: "./client/bin/ptunnel.js"
+      },
+      main: "app/main.js",
+      scripts: {
+        pretest: "node node_modules/electron/install.js",
+        test: "node --test",
+        server: "node server/index.js",
+        client: "node client/bin/ptunnel.js",
+        "build:termux": "node scripts/build-termux-client.js",
+        "check:termux": "node scripts/build-termux-client.js --check",
+        app: "electron .",
+        build: "npm run build:win && npm run build:linux && npm run build:macos",
+        "build:win": "pkg client/bin/ptunnel.js --targets node22-win-x64 --output dist/ptunnel-win.exe",
+        "build:linux": "pkg client/bin/ptunnel.js --targets node22-linux-x64 --output dist/ptunnel-linux",
+        "build:macos": "pkg client/bin/ptunnel.js --targets node22-macos-x64 --output dist/ptunnel-macos",
+        "build:macos-arm": "pkg client/bin/ptunnel.js --targets node22-macos-arm64 --output dist/ptunnel-macos-arm64",
+        "build:app": "electron-builder --win --linux --mac",
+        "build:app:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --config.win.signExecutable=false",
+        "build:app:linux": "electron-builder --linux",
+        "build:app:mac": "electron-builder --mac"
+      },
+      dependencies: {
+        "better-sqlite3": "^12.9.0",
+        dotenv: "^17.3.1",
+        mysql2: "^3.24.6",
+        ws: "^8.22.0"
+      },
+      devDependencies: {
+        "@yao-pkg/pkg": "^6.23.0",
+        "cross-env": "^10.1.0",
+        electron: "^44.7.2",
+        "electron-builder": "^26.15.3",
+        esbuild: "0.28.2"
+      },
+      overrides: {
+        "@electron/get": "^5.1.0"
+      },
+      allowScripts: {
+        "better-sqlite3@12.9.0": !0,
+        "electron-winstaller@5.4.0": !0,
+        "esbuild@0.28.2": !0
+      },
+      build: {
+        npmRebuild: !1,
+        appId: "com.jindanet.privatetunnel",
+        productName: "PrivateTunnel",
+        files: [
+          "app/**/*",
+          "client/tunnel-client.js",
+          "client/local-forwarder.js",
+          "client/server-url.js",
+          "client/startup.js",
+          "ptunnel.js",
+          "shared/protocol.js",
+          "shared/tunnel-v4.js",
+          "node_modules/**/*",
+          "package.json"
+        ],
+        directories: {
+          output: "dist-app"
+        },
+        win: {
+          target: [
+            {
+              target: "dir",
+              arch: [
+                "x64"
+              ]
+            }
+          ],
+          signExecutable: !1
+        },
+        linux: {
+          target: [
+            {
+              target: "AppImage",
+              arch: [
+                "x64"
+              ]
+            }
+          ]
+        },
+        mac: {
+          target: [
+            {
+              target: "dmg",
+              arch: [
+                "x64",
+                "arm64"
+              ]
+            }
+          ]
+        }
+      }
+    };
+  }
+});
+
 // node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
   "node_modules/ws/lib/constants.js"(exports2, module2) {
@@ -3593,7 +3705,7 @@ var require_startup_runner = __commonJS({
 var require_cli = __commonJS({
   "client/cli.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs"), path = require("node:path"), os = require("node:os"), net = require("node:net"), crypto = require("node:crypto"), readline = require("node:readline/promises"), { Writable } = require("node:stream"), { requireSecureServerWebSocketUrl } = require_server_url(), TunnelUI = require_ui(), { createStartupManager } = require_startup();
+    var fs = require("node:fs"), path = require("node:path"), os = require("node:os"), net = require("node:net"), crypto = require("node:crypto"), readline = require("node:readline/promises"), { Writable } = require("node:stream"), { requireSecureServerWebSocketUrl } = require_server_url(), TunnelUI = require_ui(), { createStartupManager } = require_startup(), CLIENT_VERSION = require_package().version;
     function configPath() {
       return path.resolve(process.env.PTUNNEL_CONFIG_PATH || path.join(os.homedir(), ".ptunnel"));
     }
@@ -3685,6 +3797,7 @@ var require_cli = __commonJS({
       for (let i = 0; i < argv.length; i++) {
         let arg = argv[i];
         if (arg === "--help" || arg === "-h") options.help = !0;
+        else if (arg === "--version" || arg === "-v") options.version = !0;
         else if (arg === "--root") options.root = !0;
         else if (arg === "--plain") options.plain = !0;
         else if (arg === "--startup") options.startup = !0;
@@ -3763,7 +3876,7 @@ PrivateTunnel · ตั้งค่าครั้งแรก / Setup`), consol
     }
     function printHelp() {
       console.log(`
-PrivateTunnel · Termux / Node.js 22.12+
+PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
 
   node ptunnel.js                 ตั้งค่าครั้งแรก แล้วเปิด tunnel / Setup and start
                                   ครั้งถัดไปเปิดรายการเดิม / Resume saved tunnel
@@ -3783,6 +3896,7 @@ PrivateTunnel · Termux / Node.js 22.12+
   node ptunnel.js init --server admin.example.com --token YOUR_ACCESS_KEY
 
   --plain                        Plain logs without terminal colors
+  --version                      Show the client release version
   Config: ${configPath()}
   Ctrl+C to stop. Open your local service before starting a tunnel.
 `);
@@ -3815,6 +3929,10 @@ PrivateTunnel · Termux / Node.js 22.12+
         return;
       }
       let { options, positional } = parseArgs(argv);
+      if (options.version) {
+        console.log(CLIENT_VERSION);
+        return;
+      }
       if (options.help) {
         printHelp();
         return;

@@ -2,7 +2,7 @@
 
 แชร์เว็บไซต์หรือบริการจากเครื่องของคุณผ่านเซิร์ฟเวอร์ที่ดูแลเอง รองรับแอปเดสก์ท็อปและคำสั่ง CLI ภาษาไทย/อังกฤษ
 
-Share a local website or TCP service through a server you control. Version **1.2.2** includes client-specific keys, owner-bound host reservations, streaming reliability and firewall-aware TCP port allocation. **Public multi-user hosting still requires independent review, capacity testing and operational controls**; see the limitations below.
+Share a local website or TCP service through a server you control. Version **1.3.0** adds a standalone Termux client and boot startup for CLI and GUI, alongside client-specific keys, owner-bound host reservations, streaming reliability and firewall-aware TCP port allocation. **Public multi-user hosting still requires independent review, capacity testing and operational controls**; see the limitations below.
 
 ## เริ่มใช้งานด้วยแอป / Desktop quick start
 
@@ -321,4 +321,4 @@ For the next patch release, run `npm version patch --no-git-tag-version`, commit
 
 The workflow can also be run manually on `main`, or by pushing a matching `vX.Y.Z` tag. Failed uploads leave an unpublished draft; re-run the original failed workflow to finish it. Published versions are never overwritten, tags never move, and versions older than Latest cannot become a new release. Bump the version for further code changes after a release. Build/test jobs have read-only repository access; only the final publishing job can write release metadata and assets, using the built-in `GITHUB_TOKEN` rather than an extra personal token.
 
-See [current release notes](deploy/RELEASE-1.2.2.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). Check the workflow result and Releases page to confirm publication; package metadata alone is not proof of a successful build.
+See [current release notes](deploy/RELEASE-1.3.0.md), [change history](CHANGELOG.md), [deployment](deploy/README.md), [security reporting](SECURITY.md), and [MIT license](LICENSE). Check the workflow result and Releases page to confirm publication; package metadata alone is not proof of a successful build. Run `ptunnel --version` (or `node ptunnel.js --version`) to check the downloaded CLI's release version; release smoke tests compare it with the asset version on every platform.

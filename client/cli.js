@@ -10,6 +10,7 @@ const { Writable } = require('node:stream');
 const { requireSecureServerWebSocketUrl } = require('./server-url');
 const TunnelUI = require('./ui');
 const { createStartupManager } = require('./startup');
+const CLIENT_VERSION = require('../package.json').version;
 
 function configPath() {
   return path.resolve(process.env.PTUNNEL_CONFIG_PATH || path.join(os.homedir(), '.ptunnel'));
@@ -114,6 +115,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') options.help = true;
+    else if (arg === '--version' || arg === '-v') options.version = true;
     else if (arg === '--root') options.root = true;
     else if (arg === '--plain') options.plain = true;
     else if (arg === '--startup') options.startup = true;
@@ -195,7 +197,7 @@ async function configure(config, { full = true, prompt = new Prompt() } = {}) {
 
 function printHelp() {
   console.log(`
-PrivateTunnel · Termux / Node.js 22.12+
+PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
 
   node ptunnel.js                 ตั้งค่าครั้งแรก แล้วเปิด tunnel / Setup and start
                                   ครั้งถัดไปเปิดรายการเดิม / Resume saved tunnel
@@ -215,6 +217,7 @@ PrivateTunnel · Termux / Node.js 22.12+
   node ptunnel.js init --server admin.example.com --token YOUR_ACCESS_KEY
 
   --plain                        Plain logs without terminal colors
+  --version                      Show the client release version
   Config: ${configPath()}
   Ctrl+C to stop. Open your local service before starting a tunnel.
 `);
@@ -266,6 +269,7 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
   const { options, positional } = parseArgs(argv);
+  if (options.version) { console.log(CLIENT_VERSION); return; }
   if (options.help) { printHelp(); return; }
   const filename = configPath();
   let config = loadConfig(filename);

@@ -137,6 +137,9 @@ test('standalone help, setup flags, status and reset work without any dependenci
   });
   const help = run(['--help']);
   assert.equal(help.status, 0, help.stderr);
+  const version = run(['--version']);
+  assert.equal(version.status, 0, version.stderr);
+  assert.equal(version.stdout.trim(), require('../package.json').version);
   assert.match(help.stdout, /node ptunnel\.js/);
   assert.equal(fs.existsSync(f.config), false, 'Help does not create a credential profile');
   const setup = run(['init', '--server', 'admin.example.com', '--token', TOKEN]);

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-11-02
 
 - Add boot startup before sign-in for CLI and GUI: `ptunnel tcp 22 --startup` or the per-tunnel desktop toggle installs Windows boot tasks, Linux systemd services, macOS LaunchDaemons, or Termux:Boot scripts. Request OS elevation during installation and use unprivileged service identities.
 - Save private, independent boot profiles; preserve HTTP/TCP target, client identity and domain settings; expose status, logs, preview, start/stop and uninstall commands. Keep desktop credentials encrypted separately, explain the service key copy, and prevent duplicate workers with a lock.
@@ -8,6 +8,7 @@
 - Guide first-time users through server, hidden access-key, HTTP/TCP and local-target setup. Save a private profile, resume the most recent tunnel with `node ptunnel.js`, and provide setup, status and reset commands.
 - Use readable mobile terminal logs with copyable public addresses, visible connection errors and bounded shutdown. Keep credentials in the Authorization header and require TLS for remote servers.
 - Document a one-line Termux install/start command, Android background limitations and bundle maintenance. Check generated-client freshness in CI and release builds, and test standalone HTTP/TCP forwarding without installed dependencies.
+- Report the client version with `--version` and compare native CLI versions during release smoke tests. Publish the previously unreleased Termux and boot-startup changes under a new version instead of skipping an already published 1.2.2 release.
 
 ## 1.2.2 — 2026-10-16
 

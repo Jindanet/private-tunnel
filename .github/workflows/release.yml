@@ -64,6 +64,7 @@ jobs:
           git archive --format=zip --prefix="PrivateTunnel-$RELEASE_VERSION/" --output="release-artifacts/PrivateTunnel-v$RELEASE_VERSION-source.zip" HEAD
           cp dist/ptunnel-linux "release-artifacts/ptunnel-v$RELEASE_VERSION-linux-x64"
           dist/ptunnel-linux --help
+          test "$(dist/ptunnel-linux --version)" = "$RELEASE_VERSION"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: PrivateTunnel-source-linux
@@ -99,6 +100,8 @@ jobs:
           Compress-Archive -Path 'dist-app/win-unpacked/*' -DestinationPath "release-artifacts/PrivateTunnel-v$env:RELEASE_VERSION-windows-x64-unsigned.zip"
           Copy-Item -LiteralPath dist/ptunnel-win.exe -Destination "release-artifacts/ptunnel-v$env:RELEASE_VERSION-windows-x64.exe"
           & dist/ptunnel-win.exe --help
+          $cliVersion = & dist/ptunnel-win.exe --version
+          if ($cliVersion -ne $env:RELEASE_VERSION) { throw "Windows CLI version does not match release version" }
           if ($LASTEXITCODE -ne 0) { throw 'Compiled Windows CLI smoke test failed.' }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -146,6 +149,7 @@ jobs:
         run: |
           mkdir -p release-artifacts
           "dist/$CLI_BINARY" --help
+          test "$("dist/$CLI_BINARY" --version)" = "$RELEASE_VERSION"
           cp "dist/$CLI_BINARY" "release-artifacts/ptunnel-v$RELEASE_VERSION-macos-$CLI_ARCH"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
