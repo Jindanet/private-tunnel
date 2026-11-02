@@ -1,6 +1,8 @@
 const { MSG, FRAME_REQUEST_BODY, DATA_TRANSPORT_VERSION, generateRequestId, sendControl, sendData } = require('../shared/tunnel-v4');
 const { normalizeDomain } = require('./routing');
 const { clientIp } = require('./security');
+const { isDeviceBridge } = require('./device-bridge');
+const { MAX_BODY } = require('../shared/device-protocol');
 
 function handleProxy(req, res, publicHost, tunnelManager) {
   const host = normalizeDomain(publicHost);
@@ -22,7 +24,32 @@ function handleProxy(req, res, publicHost, tunnelManager) {
     res.end('Tunnel setup is still completing');
     return;
   }
-  if (tunnel.pendingRequests.size >= 128) {
+  const device = isDeviceBridge(tunnel.ws);
+  if (device) {
+    const reject = (status, message, headers = {}) => {
+      res.writeHead(status, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store', ...headers });
+      res.end(message); req.resume();
+    };
+    if (!tunnel.ws.authorizeVisitor(req)) {
+      reject(401, 'Device visitor credentials required', { 'WWW-Authenticate': 'Basic realm="PrivateTunnel Device", charset="UTF-8"' }); return;
+    }
+    if (req.headers.origin) {
+      let sameOrigin = false;
+      try { const origin = new URL(req.headers.origin); sameOrigin = origin.protocol === 'https:' && origin.hostname === host; } catch {}
+      if (!sameOrigin) { reject(403, 'Cross-origin device requests are disabled'); return; }
+    }
+    if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      reject(405, 'Unsupported device method'); return;
+    }
+    if (Buffer.byteLength(req.url) > 192 || Buffer.byteLength(req.headers['content-type'] || '') > 64) {
+      reject(431, 'Device request metadata is too large'); return;
+    }
+    if (Number(req.headers['content-length'] || 0) > MAX_BODY) { reject(413, 'Device request body exceeds 1024 bytes'); return; }
+    if (!['GET', 'HEAD'].includes(req.method) && !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) {
+      reject(415, 'Device writes require application/json'); return;
+    }
+  }
+  if (tunnel.pendingRequests.size >= (device ? 1 : 128)) {
     res.writeHead(503, { 'Content-Type': 'text/plain', 'Retry-After': '5' });
     res.end('This tunnel is busy. Try again shortly.');
     return;
@@ -56,8 +83,14 @@ function handleProxy(req, res, publicHost, tunnelManager) {
   });
 
   // Track bytes in
+  let deviceBodyBytes = 0;
   req.on('data', (chunk) => {
     if (!tunnel.pendingRequests.has(requestId)) return;
+    deviceBodyBytes += chunk.length;
+    if (device && deviceBodyBytes > MAX_BODY) {
+      tunnelManager._failPendingResponse(tunnel, requestId, 'Device request body exceeds 1024 bytes', { statusCode: 413 });
+      req.resume(); return;
+    }
     timeout.refresh();
     tunnel.stats.bytesIn += chunk.length;
     if (!sendData(tunnel.ws, FRAME_REQUEST_BODY, requestId, chunk, req)) {

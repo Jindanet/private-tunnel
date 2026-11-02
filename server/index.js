@@ -17,6 +17,8 @@ const { buildRuntimeRoutes, isExactHost, matchManagedHttpHost, normalizeDomain }
 const { isValidTunnelToken, clientIp, createAttemptLimiter, isAdminHost } = require('./security');
 const { createAccessKeyStore } = require('./access-keys');
 const { authenticatePrincipal } = require('./tunnel-identity');
+const { DeviceBridge } = require('./device-bridge');
+const { SUBPROTOCOL: DEVICE_PROTOCOL, MAX_FRAME: DEVICE_MAX_FRAME } = require('../shared/device-protocol');
 
 warnIfNotElevated();
 
@@ -105,7 +107,9 @@ async function main() {
     perMessageDeflate: false,
     maxPayload: 1024 * 1024,
   });
-  tunnelWebSockets = wss;
+  const deviceWss = new WebSocketServer({ noServer: true, clientTracking: true, perMessageDeflate: false,
+    maxPayload: DEVICE_MAX_FRAME + 8, handleProtocols: (protocols) => protocols.has(DEVICE_PROTOCOL) ? DEVICE_PROTOCOL : false });
+  tunnelWebSockets = { get clients() { return new Set([...wss.clients, ...deviceWss.clients]); } };
   const upgradeLimiter = createAttemptLimiter({ max: 60 });
 
   wsServer.on('upgrade', (req, socket, head) => {
@@ -136,19 +140,25 @@ async function main() {
       socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () => socket.destroy());
       return;
     }
-    if (wss.clients.size >= 200) {
+    const protocols = String(req.headers['sec-websocket-protocol'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const isDevice = protocols.length === 1 && protocols[0] === DEVICE_PROTOCOL;
+    if ((principal.clientType === 'device') !== isDevice) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy()); return;
+    }
+    if (tunnelWebSockets.clients.size >= 200) {
       socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n', () => socket.destroy());
       return;
     }
     if (principal.kind === 'client-key'
-      && [...wss.clients].filter((ws) => ws.tunnelPrincipal?.id === principal.id).length >= 16) {
+      && [...tunnelWebSockets.clients].filter((ws) => ws.tunnelPrincipal?.id === principal.id).length >= 16) {
       socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n', () => socket.destroy());
       return;
     }
 
-    wss.handleUpgrade(req, socket, head, (ws) => {
+    const selectedServer = isDevice ? deviceWss : wss;
+    selectedServer.handleUpgrade(req, socket, head, (ws) => {
       ws.tunnelPrincipal = Object.freeze(principal);
-      wss.emit('connection', ws, req);
+      selectedServer.emit('connection', ws, req);
     });
   });
 
@@ -159,6 +169,10 @@ async function main() {
     console.log(`[WS:8080] Tunnel client connected from ${ip}`);
     tunnelManager.handleNewClient(ws, ip);
   });
+  deviceWss.on('connection', (ws, req) => {
+    ws.on('error', () => {});
+    new DeviceBridge(ws, tunnelManager, clientIp(req), accessKeyStore);
+  });
 
   wsServer.listen(WS_PORT, INTERNAL_HOST, () => {
     console.log(`[WS:${WS_PORT}] WebSocket server ready`);
@@ -167,7 +181,7 @@ async function main() {
   const dashboardServer = createDashboard(tunnelManager, runtimeConfig, {
     accessKeyStore,
     onClientKeyRevoked(id) {
-      for (const ws of wss.clients) {
+      for (const ws of tunnelWebSockets.clients) {
         if (ws.tunnelPrincipal?.kind === 'client-key' && ws.tunnelPrincipal.id === id) {
           ws.close(4001, 'Client key revoked or rotated.');
         }
@@ -228,7 +242,7 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     for (const tunnel of tunnelManager.getLiveTunnels()) tunnelManager._removeTunnel(tunnel.tunnelKey);
-    for (const ws of wss.clients) ws.terminate();
+    for (const ws of tunnelWebSockets.clients) ws.terminate();
     const deadline = setTimeout(() => process.exit(1), 5000);
     deadline.unref();
     Promise.all([wsServer, dashboardServer, proxyServer].map((server) => new Promise((resolve) => {

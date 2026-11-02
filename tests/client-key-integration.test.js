@@ -145,8 +145,8 @@ async function gateway(t, extraEnvironment = {}) {
   const login = await admin(ADMIN + '/login', { method: 'POST', form: `password=${PASSWORD}` });
   assert.equal(login.status, 302);
   cookie = login.headers['set-cookie'][0].split(';')[0];
-  const issue = async (name) => {
-    const response = await admin(KEYS, { method: 'POST', data: { name } });
+  const issue = async (name, type = 'desktop') => {
+    const response = await admin(KEYS, { method: 'POST', data: { name, type } });
     assert.equal(response.status, 201);
     assert.equal(typeof response.data.token, 'string');
     return response.data;
@@ -214,6 +214,98 @@ async function rejectedUpgrade(remote, token) {
   try { return await deadline(status.promise, 'Credential rejection timed out'); }
   finally { socket.terminate(); }
 }
+
+test('native device wire uses a separate key, visitor authentication, bounded bodies, credit and revocation', { timeout: 30000 }, async (t) => {
+  const { TYPE: T, packet, decode, SUBPROTOCOL } = require('../shared/device-protocol');
+  const remote = await gateway(t);
+  const key = await remote.issue('ESP sensor', 'device');
+  assert.equal(key.key.type, 'device');
+  assert.ok(key.visitorToken.startsWith('ptv_'));
+  assert.equal(await rejectedUpgrade(remote, key.token), 403, 'A device key cannot enter desktop transport');
+  const desktop = await remote.issue('Desktop');
+  async function deviceUpgrade(token, expectRejected = false) {
+    const ws = new WebSocket(`ws://${LOOPBACK}:${remote.wsPort}/_private-tunnel/ws`, SUBPROTOCOL, {
+      headers: { authorization: `Bearer ${token}` }, perMessageDeflate: false,
+    });
+    ws.on('error', () => {});t.after(() => ws.terminate());
+    if (expectRejected) {
+      const rejected = once(ws, 'unexpected-response');
+      const [, response] = await deadline(rejected, 'Cross-protocol key rejection stalled');
+      assert.equal(response.statusCode, 403);response.resume();ws.terminate();return;
+    }
+    await deadline(once(ws, 'open'), 'Device upgrade stalled');return ws;
+  }
+  await deviceUpgrade(desktop.token, true);
+  const ws = await deviceUpgrade(key.token);
+  const ready = deferred();
+  let host, response, held = false, active, opens = 0, cancellations = 0;
+  function pump() {
+    while (active && active.credit && active.offset < active.output.length) {
+      const n = Math.min(512, active.credit, active.output.length - active.offset);
+      ws.send(packet(T.DATA, active.id, active.output.subarray(active.offset, active.offset + n)));
+      active.offset += n;active.credit -= n;
+    }
+    if (active && active.offset === active.output.length) { ws.send(packet(T.END, active.id));active = null; }
+  }
+  ws.on('message', (data, binary) => {
+    assert.equal(binary, true);
+    const frame = decode(data), p = frame.payload;
+    if (frame.type === T.READY) {
+      assert.equal(p.readUInt16BE(), 512);assert.equal(p[2], 1);assert.equal(p.readUInt16BE(5), 1024);
+      host = new URL(p.subarray(9).toString()).hostname;ready.resolve();
+    } else if (frame.type === T.OPEN) { ++opens;active = { id: frame.stream, body: [], credit: 512, offset: 0 }; }
+    else if (frame.type === T.DATA) {
+      active.body.push(p);const credit = Buffer.alloc(2);credit.writeUInt16BE(p.length);ws.send(packet(T.CREDIT, frame.stream, credit));
+    } else if (frame.type === T.END && !held) {
+      response = Buffer.concat(active.body);active.output = response.length ? response : Buffer.alloc(8192, 'd');
+      const type = Buffer.from('application/octet-stream'), header = Buffer.alloc(3 + type.length);
+      header.writeUInt16BE(200);header[2] = type.length;type.copy(header, 3);
+      ws.send(packet(T.RESPONSE, frame.stream, header));pump();
+    } else if (frame.type === T.CREDIT && active) { active.credit += p.readUInt16BE();pump(); }
+    else if (frame.type === T.CANCEL) { ++cancellations;active = null; }
+    else if (frame.type === T.PING) ws.send(packet(T.PONG));
+  });
+  const strings = ['sensor-fixed', 'apps.example.test', 'sensor-native', 'esp8266'];
+  const fields = strings.map((s) => Buffer.from(s));const hello = Buffer.alloc(10);
+  hello[0] = 1;hello.writeUInt16BE(512, 1);hello[3] = 1;hello.writeUInt16BE(512, 4);
+  fields.forEach((p, i) => { hello[6 + i] = p.length; });
+  ws.send(packet(T.HELLO, 0, Buffer.concat([hello, ...fields])));
+  await deadline(ready.promise, 'Device READY stalled');
+  assert.equal(host, 'sensor-native.apps.example.test');
+  function request({ token = key.visitorToken, method = 'GET', body, headers = {}, chunked = false } = {}) {
+    return new Promise((resolve, reject) => {
+      const req = http.request({ host: LOOPBACK, port: remote.proxyPort, path: '/status', method, agent: false,
+        headers: { host, ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...(body ? { 'content-type': 'application/json', ...(!chunked ? { 'content-length': body.length } : {}) } : {}), ...headers } }, (res) => {
+        const chunks = [];res.on('data', (p) => chunks.push(p));res.on('error', reject);
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      });req.on('error', reject);if (chunked && body) { req.write(body);req.end(); } else req.end(body);
+    });
+  }
+  assert.equal((await request({ token: '' })).status, 401);
+  assert.equal((await request({ token: key.token })).status, 401, 'Connection secret is not visitor authentication');
+  assert.equal(opens, 0);
+  assert.equal((await request({ headers: { origin: 'https://evil.example' } })).status, 403);
+  const downloaded = await deadline(request(), 'Credit-controlled response stalled');
+  assert.equal(downloaded.status, 200);assert.deepEqual(downloaded.body, Buffer.alloc(8192, 'd'));
+  const echoed = await deadline(request({ method: 'POST', body: Buffer.alloc(1024, 'q') }), 'Bounded upload stalled');
+  assert.deepEqual(echoed.body, Buffer.alloc(1024, 'q'));
+  assert.equal((await request({ method: 'POST', body: Buffer.alloc(1025) })).status, 413);
+  assert.equal((await request({ method: 'POST', body: Buffer.alloc(1025), chunked: true })).status, 413);
+  await waitFor(() => !active, 'Oversized upload was not cancelled');
+  const basic = await request({ token: '', headers: { authorization: `Basic ${Buffer.from('device:' + key.visitorToken).toString('base64')}` } });
+  assert.equal(basic.status, 200);
+  held = true;
+  const pending = request();
+  await waitFor(() => !!active, 'Held request not opened');
+  assert.equal((await request()).status, 503, 'No unbounded backlog on a tiny device');
+  const closed = once(ws, 'close');
+  const rotation = await remote.admin(`${KEYS}/${key.key.id}/rotate`, { method: 'POST', data: {} });
+  assert.equal(rotation.status, 200);assert.notEqual(rotation.data.visitorToken, key.visitorToken);
+  const [code] = await deadline(closed, 'Device was not disconnected on key rotation');
+  assert.equal(code, 4001);assert.equal((await pending).status, 502);
+  assert.ok(cancellations >= 1, 'Oversized chunked upload cancels its device stream');
+});
 
 test('actual gateway binds reservations to issued keys and rotates or revokes only the selected principal', { timeout: 20000 }, async (t) => {
   const local = service(t, (_req, res) => res.end('local service'));

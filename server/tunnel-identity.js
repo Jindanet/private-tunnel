@@ -6,7 +6,8 @@ function authenticatePrincipal(req, { accessKeyStore, sharedToken, allowShared =
   const authorization = req.headers.authorization;
   if (typeof authorization === 'string' && authorization.startsWith('Bearer ')) {
     const key = accessKeyStore?.authenticate(authorization.slice(7));
-    if (key) return { kind: 'client-key', id: key.id, name: key.name };
+    if (key) return { kind: 'client-key', id: key.id, name: key.name,
+      ...(key.type === 'device' ? { clientType: 'device' } : {}) };
   }
   if (allowShared && authenticateTunnel(req, sharedToken, { allowLegacyQuery, allowUnauthenticated })) {
     return { kind: 'shared', id: 'legacy' };

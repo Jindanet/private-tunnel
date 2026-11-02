@@ -3,6 +3,7 @@ const clientKeysPanel = `
   <h2 id="clientKeysHeading" data-i18n="clientKeysHeading">Client access keys</h2>
   <p class="settings-form-note" data-i18n="clientKeysIntro">Create a separate key for each person. Their apps keep their own reserved public addresses.</p>
   <form id="clientKeyForm">
+    <div class="field"><label for="clientKeyType" data-i18n="clientKeyType">Client type</label><select id="clientKeyType"><option value="desktop" data-i18n="clientKeyDesktop">Desktop / CLI</option><option value="device" data-i18n="clientKeyDevice">ESP32 / ESP8266 device</option></select><small data-i18n="clientKeyDeviceHint">Device keys work only with device firmware. Rotation replaces both its connection key and visitor password.</small></div>
     <div class="field"><label for="clientKeyName" data-i18n="clientKeyName">Person or device name</label><input id="clientKeyName" name="client-name" maxlength="100" required autocomplete="off" data-i18n-placeholder="clientKeyNamePlaceholder" placeholder="For example, Alice's laptop"><small data-i18n="clientKeySetupHint">Send the new key and this server's address to its owner. They save both in the desktop app or CLI.</small></div>
     <div class="actions"><button type="submit" class="btn primary" id="clientKeyIssue" data-i18n="clientKeyIssue">Create client key</button><button type="button" class="btn secondary" id="clientKeysRefresh" data-i18n="clientKeysRefresh">Refresh list</button></div>
   </form>
@@ -12,6 +13,7 @@ const clientKeysPanel = `
     <input id="clientKeySecret" type="password" readonly autocomplete="off" spellcheck="false" aria-describedby="clientKeySecretHint">
     <small id="clientKeySecretHint" data-i18n="clientKeySecretHint">Copy and send it now. The server stores only a hash and cannot show this key again. Dismiss or leave Settings to clear it.</small>
     <div class="actions"><button type="button" class="btn secondary" id="clientKeyShow" aria-controls="clientKeySecret" aria-pressed="false" data-i18n="showKey">Show</button><button type="button" class="btn primary" id="clientKeyCopy" data-i18n="clientKeyCopy">Copy key</button><button type="button" class="btn secondary" id="clientKeyDismiss" data-i18n="clientKeyDismiss">Dismiss</button></div>
+    <div id="deviceVisitorPanel" hidden><label for="deviceVisitorSecret" data-i18n="deviceVisitorLabel">Device visitor password</label><input id="deviceVisitorSecret" type="password" readonly autocomplete="off" spellcheck="false"><small data-i18n="deviceVisitorHint">Keep this separately from the connection key. Open the public URL with username device and this password, or use it as a Bearer token.</small><div class="actions"><button type="button" class="btn secondary" id="deviceVisitorShow" aria-controls="deviceVisitorSecret" aria-pressed="false" data-i18n="showKey">Show</button><button type="button" class="btn secondary" id="deviceVisitorCopy" data-i18n="clientKeyCopy">Copy key</button></div></div>
   </div>
   <p id="clientKeyStatus" class="status" role="status" aria-live="polite" style="margin-top:16px"></p>
   <div id="clientKeysList" class="form-grid" style="margin-top:20px"></div>
@@ -20,6 +22,7 @@ const clientKeysPanel = `
 
 const clientKeysBehavior = String.raw`
 Object.assign(I18N.en,{
+  clientKeyType:'Client type',clientKeyDesktop:'Desktop / CLI',clientKeyDevice:'ESP32 / ESP8266 device',clientKeyDeviceHint:'Device keys work only with device firmware. Rotation replaces both its connection key and visitor password.',deviceVisitorLabel:'Device visitor password',deviceVisitorHint:'Keep this separately from the connection key. Open the public URL with username device and this password, or use it as a Bearer token.',
   clientKeysHeading:'Client access keys',clientKeysIntro:'Create a separate key for each person. Their apps keep their own reserved public addresses.',
   clientKeyName:'Person or device name',clientKeyNamePlaceholder:"For example, Alice's laptop",clientKeySetupHint:'Send the new key and this server\'s address to its owner. They save both in the desktop app or CLI.',
   clientKeyIssue:'Create client key',clientKeysRefresh:'Refresh list',clientKeySecretLabel:'New access key',
@@ -36,6 +39,7 @@ Object.assign(I18N.en,{
   fieldTunnelToken:'Legacy shared key',legacySharedAccess:'Advanced: shared-key compatibility',legacySharedHint:'Unused by default. ALLOW_SHARED_TUNNEL_TOKEN=true enables this key for migration. Everyone using it shares one owner; use separate client keys above for new connections.'
 });
 Object.assign(I18N.th,{
+  clientKeyType:'ประเภทไคลเอนต์',clientKeyDesktop:'เดสก์ท็อป / CLI',clientKeyDevice:'อุปกรณ์ ESP32 / ESP8266',clientKeyDeviceHint:'รหัสอุปกรณ์ใช้กับเฟิร์มแวร์อุปกรณ์เท่านั้น การเปลี่ยนรหัสจะเปลี่ยนทั้งรหัสเชื่อมต่อและรหัสผ่านเข้าชมเว็บ',deviceVisitorLabel:'รหัสผ่านเข้าชมเว็บอุปกรณ์',deviceVisitorHint:'เก็บแยกจากรหัสเชื่อมต่อ เปิดที่อยู่สาธารณะด้วยชื่อผู้ใช้ device และรหัสผ่านนี้ หรือใช้เป็น Bearer token',
   clientKeysHeading:'รหัสเชื่อมต่อแยกผู้ใช้',clientKeysIntro:'สร้างรหัสแยกให้แต่ละคน แอปของแต่ละคนจะมีที่อยู่สาธารณะที่สงวนไว้เป็นของตัวเอง',
   clientKeyName:'ชื่อผู้ใช้หรืออุปกรณ์',clientKeyNamePlaceholder:'เช่น แล็ปท็อปของคุณเอ',clientKeySetupHint:'ส่งรหัสใหม่และที่อยู่เซิร์ฟเวอร์นี้ให้เจ้าของ เพื่อนำไปบันทึกในแอปเดสก์ท็อปหรือ CLI',
   clientKeyIssue:'สร้างรหัสเชื่อมต่อ',clientKeysRefresh:'โหลดรายการใหม่',clientKeySecretLabel:'รหัสเชื่อมต่อใหม่',
@@ -59,6 +63,8 @@ let clientKeysMessage='clientKeysReady';
 let clientKeysSecretGeneration=0;
 
 function clearClientKeySecret(){
+  el('deviceVisitorSecret').value='';el('deviceVisitorSecret').type='password';el('deviceVisitorPanel').hidden=true;
+  el('deviceVisitorShow').setAttribute('aria-pressed','false');el('deviceVisitorShow').textContent=t('showKey');
   clientKeysSecretGeneration+=1;
   el('clientKeySecret').value='';
   el('clientKeySecret').type='password';
@@ -86,6 +92,7 @@ function renderClientKeys(){
     const name=create('strong','',key.name);
     name.style.overflowWrap='anywhere';
     row.appendChild(name);
+    if(key.type==='device')row.appendChild(create('small','',t('clientKeyDevice')));
     row.appendChild(create('small','',t(key.revokedAt?'clientKeyRevoked':'clientKeyActive')+' · '+t('clientKeyCreated',{date:new Date(key.createdAt).toLocaleString(currentLang==='th'?'th-TH':'en-US')})));
     if(!key.revokedAt){
       const actions=create('div','actions');
@@ -103,9 +110,11 @@ function renderClientKeys(){
   });
   el('clientKeyIssue').disabled=clientKeysBusy||clientKeysLoading;
   el('clientKeyName').disabled=clientKeysBusy;
+  el('clientKeyType').disabled=clientKeysBusy;
   el('clientKeysRefresh').disabled=clientKeysBusy||clientKeysLoading;
   el('clientKeyStatus').textContent=t(clientKeysMessage);
   el('clientKeyShow').textContent=t(el('clientKeySecret').type==='password'?'showKey':'hideKey');
+  el('deviceVisitorShow').textContent=t(el('deviceVisitorSecret').type==='password'?'showKey':'hideKey');
 }
 async function loadClientKeys(){
   if(clientKeysLoading||clientKeysBusy)return;
@@ -121,6 +130,7 @@ function revealClientKey(result,generation){
     clientKeysMessage='clientKeySecretCleared';return;
   }
   el('clientKeySecret').value=result.token;
+  el('deviceVisitorSecret').value=result.visitorToken||'';el('deviceVisitorPanel').hidden=!result.visitorToken;
   el('clientKeySecretOwner').textContent=result.key.name;
   el('clientKeySecretPanel').hidden=false;
 }
@@ -130,7 +140,7 @@ async function issueClientKey(){
   const generation=clientKeysSecretGeneration;
   clientKeysBusy=true;clientKeysMessage='clientKeyCreating';renderClientKeys();
   try{
-    const result=await api(currentRoutes.adminApiBasePath+'/client-keys',{method:'POST',body:JSON.stringify({name:el('clientKeyName').value})});
+    const result=await api(currentRoutes.adminApiBasePath+'/client-keys',{method:'POST',body:JSON.stringify({name:el('clientKeyName').value,type:el('clientKeyType').value})});
     clientKeysData.push(result.key);clientKeysLoaded=true;el('clientKeyName').value='';clientKeysMessage='clientKeyIssued';
     revealClientKey(result,generation);
   }catch(error){clientKeysMessage=clientKeyErrorMessage(error,'clientKeySaveFailed');}
@@ -161,6 +171,15 @@ el('clientKeyCopy').addEventListener('click',async()=>{
   renderClientKeys();
 });
 el('clientKeyDismiss').addEventListener('click',()=>{clearClientKeySecret();el('clientKeyName').focus();});
+el('deviceVisitorShow').addEventListener('click',()=>{
+  const input=el('deviceVisitorSecret');const show=input.type==='password';input.type=show?'text':'password';
+  el('deviceVisitorShow').setAttribute('aria-pressed',String(show));el('deviceVisitorShow').textContent=t(show?'hideKey':'showKey');
+});
+el('deviceVisitorCopy').addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText(el('deviceVisitorSecret').value);clientKeysMessage='clientKeyCopied';}
+  catch{el('deviceVisitorSecret').focus();el('deviceVisitorSecret').select();clientKeysMessage='clientKeyCopyFailed';}
+  renderClientKeys();
+});
 const clientKeysPreviousSwitchTab=switchTab;
 switchTab=function(name){
   if(name!=='settings')clearClientKeySecret();

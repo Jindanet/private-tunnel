@@ -27,7 +27,8 @@ function isTimestamp(value) {
 }
 
 function publicKey(key) {
-  return { id: key.id, name: key.name, createdAt: key.createdAt, rotatedAt: key.rotatedAt, revokedAt: key.revokedAt };
+  return { id: key.id, name: key.name, createdAt: key.createdAt, rotatedAt: key.rotatedAt, revokedAt: key.revokedAt,
+    ...(key.type === 'device' ? { type: 'device', visitorAuth: true } : {}) };
 }
 
 function hashToken(token) {
@@ -44,7 +45,7 @@ function readRegistry(filePath, fileSystem) {
   let data;
   try { data = JSON.parse(raw); }
   catch { throw new Error('Client access key registry is invalid. Restore a valid registry before starting.'); }
-  const allowedFields = ['id', 'name', 'tokenHash', 'createdAt', 'rotatedAt', 'revokedAt'];
+  const allowedFields = ['id', 'name', 'tokenHash', 'createdAt', 'rotatedAt', 'revokedAt', 'type', 'visitorTokenHash'];
   const ids = new Set();
   if (!data || typeof data !== 'object' || Array.isArray(data) || data.version !== 1
     || Object.keys(data).some((field) => !['version', 'keys'].includes(field))
@@ -57,6 +58,8 @@ function readRegistry(filePath, fileSystem) {
       || typeof key.name !== 'string' || !key.name.trim() || key.name.length > 100 || /[\x00-\x1f\x7f]/.test(key.name)
       || !/^[a-f0-9]{64}$/.test(key.tokenHash || '') || !isTimestamp(key.createdAt)
       || !(key.rotatedAt === null || isTimestamp(key.rotatedAt))
+      || !(key.type === undefined && key.visitorTokenHash === undefined
+        || key.type === 'device' && /^[a-f0-9]{64}$/.test(key.visitorTokenHash || ''))
       || !(key.revokedAt === null || isTimestamp(key.revokedAt))) {
       throw new Error('Client access key registry is invalid. Restore a valid registry before starting.');
     }
@@ -99,15 +102,18 @@ function createAccessKeyStore({ filePath, dataDir, fileSystem = fs } = {}) {
     return result;
   }
 
-  function issue(name) {
+  function issue(name, { type = 'desktop' } = {}) {
     return mutate(() => {
+      if (!['desktop', 'device'].includes(type)) throw inputError('Invalid client key type.');
       const checkedName = validateName(name);
       if (keys.length >= MAX_KEYS) throw inputError('The client key registry is full.');
       const id = crypto.randomUUID();
       const token = `ptk_${id}_${crypto.randomBytes(32).toString('base64url')}`;
       const key = { id, name: checkedName, tokenHash: hashToken(token), createdAt: new Date().toISOString(), rotatedAt: null, revokedAt: null };
+      const visitorToken = type === 'device' ? `ptv_${crypto.randomBytes(32).toString('base64url')}` : null;
+      if (visitorToken) Object.assign(key, { type: 'device', visitorTokenHash: hashToken(visitorToken) });
       persist([...keys, key]);
-      return { key: publicKey(key), token };
+      return { key: publicKey(key), token, ...(visitorToken ? { visitorToken } : {}) };
     });
   }
 
@@ -131,8 +137,10 @@ function createAccessKeyStore({ filePath, dataDir, fileSystem = fs } = {}) {
       if (key.revokedAt) throw inputError('A revoked client key cannot be rotated. Issue a new client key instead.');
       const token = `ptk_${id}_${crypto.randomBytes(32).toString('base64url')}`;
       const rotated = { ...key, tokenHash: hashToken(token), rotatedAt: new Date().toISOString() };
+      const visitorToken = key.type === 'device' ? `ptv_${crypto.randomBytes(32).toString('base64url')}` : null;
+      if (visitorToken) rotated.visitorTokenHash = hashToken(visitorToken);
       persist(keys.map((item) => item.id === id ? rotated : item));
-      return { key: publicKey(rotated), token };
+      return { key: publicKey(rotated), token, ...(visitorToken ? { visitorToken } : {}) };
     });
   }
 
@@ -146,7 +154,12 @@ function createAccessKeyStore({ filePath, dataDir, fileSystem = fs } = {}) {
     return crypto.timingSafeEqual(candidate, Buffer.from(key.tokenHash, 'hex')) ? publicKey(key) : null;
   }
 
-  return { list: () => keys.map(publicKey), issue, revoke, rotate, authenticate };
+  function authenticateVisitor(id, token) {
+    const key = keys.find((item) => item.id === id && item.type === 'device' && !item.revokedAt);
+    if (!key || typeof token !== 'string' || !/^ptv_[A-Za-z0-9_-]{43}$/.test(token)) return false;
+    return crypto.timingSafeEqual(Buffer.from(hashToken(token), 'hex'), Buffer.from(key.visitorTokenHash, 'hex'));
+  }
+  return { list: () => keys.map(publicKey), issue, revoke, rotate, authenticate, authenticateVisitor };
 }
 
 module.exports = { createAccessKeyStore };

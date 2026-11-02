@@ -952,7 +952,7 @@ function createDashboard(tunnelManager, runtimeConfig, options = {}) {
             sendJson(res, 401, { error: 'Session expired. Sign in again.' }); return;
           }
           if (pathname === clientKeysPath) {
-            sendJson(res, 201, await store.issue(payload.name)); return;
+            sendJson(res, 201, await store.issue(payload.name, { type: payload.type ?? 'desktop' })); return;
           }
           const [id, action] = clientKeyAction;
           const result = await store[action](id);

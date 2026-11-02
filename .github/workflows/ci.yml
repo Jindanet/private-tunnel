@@ -9,6 +9,49 @@ permissions:
   contents: read
 
 jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - core: esp32:esp32@3.3.12
+            fqbn: esp32:esp32:esp32
+            board: esp32
+            index: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          - core: esp8266:esp8266@3.1.2
+            fqbn: esp8266:esp8266:nodemcuv2
+            board: esp8266
+            index: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Arduino CLI
+        run: |
+          curl --fail --location https://downloads.arduino.cc/arduino-cli/arduino-cli_1.5.1_Linux_64bit.tar.gz -o /tmp/arduino-cli.tar.gz
+          tar -xzf /tmp/arduino-cli.tar.gz -C /tmp arduino-cli
+          /tmp/arduino-cli version
+      - name: Compile both native examples
+        env:
+          CORE: ${{ matrix.core }}
+          FQBN: ${{ matrix.fqbn }}
+          BOARD_INDEX: ${{ matrix.index }}
+        run: |
+          /tmp/arduino-cli core update-index --additional-urls "$BOARD_INDEX"
+          /tmp/arduino-cli core install "$CORE" --additional-urls "$BOARD_INDEX"
+          for example in BasicHttp ProvisionedHttp; do
+            /tmp/arduino-cli compile --fqbn "$FQBN" --library device/PrivateTunnelDevice --warnings all --output-dir "firmware/$example" "device/PrivateTunnelDevice/examples/$example"
+          done
+          g++ -std=c++17 -Wall -Wextra -Werror tests/device-wire.cpp -o /tmp/device-wire
+          /tmp/device-wire
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: firmware-${{ matrix.board }}
+          path: firmware/
+          if-no-files-found: error
+          retention-days: 14
   test:
     strategy:
       fail-fast: false

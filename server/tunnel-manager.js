@@ -11,6 +11,7 @@ const { normalizeDomain, buildHttpHost, getTcpAddress, getTunnelHttpOrigin } = r
 const { bindClientIdentity } = require('./tunnel-identity');
 const { createTcpVisitorFilter } = require('./tcp-access');
 const { parseTcpAllowedPorts, publicTcpPorts } = require('./tcp-ports');
+const { isDeviceBridge } = require('./device-bridge');
 
 class TunnelManager {
   constructor(runtimeConfig) {
@@ -162,7 +163,7 @@ class TunnelManager {
           return;
         }
         const selectedVersion = msg.dataTransportVersions?.includes(DATA_TRANSPORT_VERSION) ? DATA_TRANSPORT_VERSION : 1;
-        if (selectedVersion !== DATA_TRANSPORT_VERSION && this.runtimeConfig.requireDataTransportV4) {
+        if (selectedVersion !== DATA_TRANSPORT_VERSION && this.runtimeConfig.requireDataTransportV4 && !isDeviceBridge(ws)) {
           sendControl(ws, { type: MSG.TUNNEL_ERROR, message: 'Update your client: this server requires data transport v4.' });
           return;
         }
@@ -828,7 +829,7 @@ class TunnelManager {
       const pending = tunnel.pendingRequests.get(frame.requestId);
       if (pending && !pending.res.destroyed) {
         try {
-          if (writeFrame(tunnel.ws, frame, pending.res)) {
+          if (isDeviceBridge(tunnel.ws) ? tunnel.ws.writeDeviceResponse(frame, pending.res) : writeFrame(tunnel.ws, frame, pending.res)) {
             tunnel.stats.bytesOut += frame.data.length;
             pending.timeout?.refresh?.();
           } else {
