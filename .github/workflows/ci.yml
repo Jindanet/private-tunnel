@@ -79,7 +79,16 @@ jobs:
       - run: npm run check:termux
       - name: Run tests with a virtual display
         if: runner.os == 'Linux'
+        env:
+          PT_ADMIN_CAPTURE_DIR: ${{ runner.temp }}/ptunnel-admin-previews
         run: xvfb-run --auto-servernum npm test
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: runner.os == 'Linux' && matrix.node == 22
+        with:
+          name: device-login-previews
+          path: ${{ runner.temp }}/ptunnel-admin-previews/admin-device-access-*.png
+          if-no-files-found: error
+          retention-days: 7
       - name: Run tests on Windows
         if: runner.os == 'Windows'
         run: npm test

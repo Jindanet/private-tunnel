@@ -177,6 +177,8 @@ async function browserRun() {
     await until(() => !document.getElementById('clientKeyIssue').disabled && !!document.querySelector('[data-visitor-auth-id]'));
     assert.equal(await evaluate(() => document.querySelector('[data-visitor-auth-id]').checked),false);
     assert.equal(await evaluate(() => document.querySelector('[data-visitor-auth-id]').labels[0].textContent.trim()),'ให้ผู้ชมกรอกรหัสผ่านก่อนเข้าเว็บ');
+    await evaluate(() => document.querySelector('[data-visitor-auth-id]').closest('.field').scrollIntoView({block:'center'}));
+    await capture('admin-device-access-th.png');
     await evaluate(() => document.querySelector('[data-visitor-auth-id]').click());
     await until(() => !document.getElementById('clientKeyIssue').disabled && document.querySelector('[data-visitor-auth-id]').checked);
     await evaluate(() => document.getElementById('clientKeysRefresh').click());
@@ -185,6 +187,8 @@ async function browserRun() {
     await evaluate(() => document.querySelector('[data-lang="en"]').click());
     assert.equal(await evaluate(() => document.querySelector('[data-visitor-auth-id]').labels[0].textContent.trim()),'Require visitor password');
     assert.equal(await evaluate(() => document.getElementById('clientKeySecret').value),'');
+    await evaluate(() => document.querySelector('[data-visitor-auth-id]').closest('.field').scrollIntoView({block:'center'}));
+    await capture('admin-device-access-en.png');
 
     const unsaved = await evaluate(() => {
       document.querySelector('[data-onboard="settings"]').click();
