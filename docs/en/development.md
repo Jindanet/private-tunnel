@@ -13,7 +13,7 @@
 | `server/device-bridge.js` | Server-created adapter for the bounded device wire |
 | `shared/protocol.js`, `shared/tunnel-v4.js` | Desktop control and current credit-controlled transport |
 | `shared/device-protocol.js` | Device wire validation and constants |
-| `device/PrivateTunnelDevice/` | Arduino library, bounded WebSocket parser and two examples |
+| `device/PrivateTunnelDevice/` | Arduino library, bounded WebSocket parser and HTTP, provisioning and Wake-on-LAN examples |
 | `tests/` | Unit, gateway, Electron, startup and native firmware-parser checks |
 | `deploy/`, `.github/` | Service/proxy examples and CI/release automation |
 
@@ -42,7 +42,7 @@ The freshness check compares the generated result with the checked-in file and v
 
 ## Compile firmware
 
-The Arduino library has no third-party WebSocket dependency. CI pins Arduino CLI **1.5.1**, ESP32 core **3.3.12** and ESP8266 core **3.1.2**, and compiles `BasicHttp` plus `ProvisionedHttp` for both boards. A local equivalent, after installing the matching core:
+The Arduino library has no third-party WebSocket dependency. CI pins Arduino CLI **1.5.1**, ESP32 core **3.3.12** and ESP8266 core **3.1.2**, and compiles `BasicHttp`, `ProvisionedHttp` and `WakeOnLan` for both boards. A local equivalent, after installing the matching core:
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32 --library device/PrivateTunnelDevice device/PrivateTunnelDevice/examples/ProvisionedHttp

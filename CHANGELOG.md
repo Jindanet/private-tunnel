@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.1 — 2026-11-11
+
+- Forward device request bodies with their actual content type instead of rejecting non-JSON writes. Preserve text, form and binary bytes within existing size and credit limits.
+- Let administrators disable the visitor-password prompt per device key when firmware handles its own login. Preserve the protected default, connection-key authentication, secrets and live board connections; policy changes apply to the next request.
+- Add a WakeOnLan Arduino example adapted from the reported login flow, with text credentials, method checks, cooldown and clearer HTTP errors. Compile all three examples for both ESP cores in CI and release gates.
+- Test firmware login over the actual gateway, policy persistence, admin session/origin checks, failed saves and bilingual controls. Update English/Thai documentation and package the corrected example.
+
 ## 1.4.0 — 2026-11-02
 
 - Add experimental native Arduino clients for ESP32 and ESP8266, without Node.js or a third-party WebSocket dependency. Use verified TLS, bounded binary frames, credit, one active HTTP callback and a 1 KiB request-body limit.

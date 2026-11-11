@@ -9,7 +9,7 @@
 services:
   private-tunnel:
     build: .
-    image: private-tunnel:1.4.0
+    image: private-tunnel:1.4.1
     network_mode: host
     init: true
     restart: unless-stopped

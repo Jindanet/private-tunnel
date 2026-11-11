@@ -26,7 +26,7 @@ I chose callbacks rather than connecting back to a second HTTP server on the boa
 - **Administrator:** one password and a session, with protected mutations and password hashing. No MFA or per-administrator roles.
 - **Client connection:** a separately issued random key, sent in the Authorization header. The server stores hashes. Profile identifiers are namespaced under the authenticated key, so a different key cannot claim another owner's reservation merely by copying a client ID.
 - **Desktop/CLI visitors:** public access by default. The application provides login/authorization. Optional TCP IP/CIDR restrictions apply to actual peer addresses.
-- **Device visitors:** a different random password, checked by the server before delivery to firmware. Basic authentication uses username `device`; scripts can use a Bearer token. Firmware still validates the operation and its input.
+- **Device visitors:** a different random password, checked by default before delivery to firmware. Basic authentication uses username `device`; scripts can use a Bearer token. An administrator may disable this per key when the firmware handles its own login. Connection-key authentication remains required, and firmware validates each protected operation and its input.
 
 Individual-key sessions are limited to sixteen per key and the control listener has an overall client limit and upgrade attempt limiting. These are basic bounds, not a complete public-hosting quota or abuse system. Rotate or revoke a key in Settings to disconnect its sessions. Device rotation replaces both connection and visitor secrets.
 

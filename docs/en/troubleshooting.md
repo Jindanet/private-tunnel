@@ -29,7 +29,8 @@
 | Waiting for clock | Allow SNTP/DNS or supply a reliable application clock before TLS. |
 | TLS fails on ESP8266 | Check the real CA/chain/time and free heap, including the largest free block. The 512-byte protocol does not shrink core TLS buffers. Use a gateway if your sketch cannot fit. |
 | 401 on public `/status` | Use username `device` plus the visitor password, or Bearer visitor token. The connection key is not accepted here. |
-| 403 / 415 | Cross-origin browser writes are rejected; write methods need `application/json`. Callbacks should check methods too. |
+| 403 / 415 | Cross-origin requests are rejected. Server 1.4.0 required JSON writes; update to 1.4.1+ to forward text/form/binary bodies. A firmware callback may still reject formats itself. |
+| Two login screens | Turn off Require visitor password for that device key when the firmware handles its own login. This applies immediately, without changing the board key. |
 | 413 / 431 / 503 | Respect the 1024-byte body, 192-byte path, 64-byte content type and one-active-request limits. Retry later for 503. |
 | 404 on a registered route | Paths match exactly, including query strings. The sketch's route must prepare a valid response; check response API return values. |
 | Device no longer retries | Authentication/policy rejection or malformed protocol is terminal until restart/reconfiguration. Inspect `lastError()` and server logs without printing keys. |

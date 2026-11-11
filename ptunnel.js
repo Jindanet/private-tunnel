@@ -442,7 +442,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "privatetunnel",
-      version: "1.4.0",
+      version: "1.4.1",
       description: "ngrok-like tunnel system - expose local servers to the internet",
       author: "Jindanet",
       license: "MIT",

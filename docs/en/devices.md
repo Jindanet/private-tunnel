@@ -4,7 +4,7 @@
 
 I added a separate device client because running the desktop client on a microcontroller is not practical. Node.js, large receive windows and general-purpose socket forwarding do not fit the same constraints as an ESP8266. This library keeps the work small: a verified outbound TLS connection, one HTTP request, and a C++ callback that reads a sensor or prepares a response.
 
-This is the **first experimental device release**, library **0.1.0**, wire protocol **`ptunnel.device.v1`**. Automated tests exercise the actual server, and CI compiles both examples for ESP32 core **3.3.12** and ESP8266 core **3.1.2**. These checks do not establish stability on physical hardware or provide a measured peak RAM figure.
+Device support is **experimental**, library **0.1.1**, wire protocol **`ptunnel.device.v1`**. Automated tests exercise the actual server, and CI compiles BasicHttp, ProvisionedHttp and WakeOnLan for ESP32 core **3.3.12** and ESP8266 core **3.1.2**. These checks do not establish stability on physical hardware or provide a measured peak RAM figure.
 
 ## Choose a board
 
@@ -22,7 +22,7 @@ The API and limits are intentionally the same on ESP32 and ESP8266 in this relea
 
 1. Update the PrivateTunnel server to **1.4.0 or later**. Keep `REQUIRE_DATA_TRANSPORT_V4=true`; the device adapter does not require weakening desktop transport policy.
 2. In administrator **Settings → Client access keys**, choose **ESP32 / ESP8266 device** and create a named key. Copy the **connection key** and **visitor password** immediately. Only hashes remain on the server.
-3. Download `PrivateTunnelDevice-v1.4.0-arduino.zip` from [Releases](https://github.com/Jindanet/private-tunnel/releases) and use **Sketch → Include Library → Add .ZIP Library**. Alternatively, copy the complete [`device/PrivateTunnelDevice`](../../device/PrivateTunnelDevice) folder into the sketchbook's `libraries` directory; it directly contains `library.properties` and `src`. Restart the IDE if necessary. No separate WebSocket library is needed.
+3. Download `PrivateTunnelDevice-v1.4.1-arduino.zip` from [Releases](https://github.com/Jindanet/private-tunnel/releases) and use **Sketch → Include Library → Add .ZIP Library**. Alternatively, copy the complete [`device/PrivateTunnelDevice`](../../device/PrivateTunnelDevice) folder into the sketchbook's `libraries` directory; it directly contains `library.properties` and `src`. Restart the IDE if necessary. No separate WebSocket library is needed.
 4. Add the matching board-manager index in Arduino IDE Preferences:
 
    ESP32: `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
@@ -72,11 +72,25 @@ Open `https://sensor-one.apps.example.com/status` and enter username **`device`*
 curl -H "Authorization: Bearer $DEVICE_VISITOR_TOKEN" https://sensor-one.apps.example.com/status
 ```
 
-The server checks visitor authentication before forwarding any request to the board. The connection key cannot be used as a visitor password; ordinary desktop keys cannot connect as devices, and device keys cannot enter the desktop transport.
+By default, the server checks visitor authentication before forwarding any request to the board. The connection key cannot be used as a visitor password; ordinary desktop keys cannot connect as devices, and device keys cannot enter the desktop transport.
 
 Rotating a device key changes **both secrets** and disconnects existing connections. Update the saved board key and the visitor's password. The same key ID and board identity preserve the address reservation. Revocation is permanent. Do not send either secret as a URL query parameter.
 
-Writes require `application/json`. A supplied browser `Origin` must be the same HTTPS hostname. Use GET/HEAD for read-only actions; application callbacks must still validate methods, JSON, values and authorization needed by the actual operation. This library does not parse JSON or authorize individual GPIO actions for you.
+### Use the board's own login page
+
+Server **1.4.1+** lets an administrator turn off **Require visitor password** on an existing device key in Settings. The next request goes directly to the firmware's page, without a second browser login. This setting applies immediately and does not rotate the connection key, disconnect the board or require reflashing. Newly created keys require a visitor password by default; the creation form can explicitly disable it too.
+
+When off, the firmware is responsible for authenticating every protected action. The connection key is still required to connect the board. You can turn the visitor password back on at any time; its current value remains valid. The policy is saved per device key and applies to every board using that key.
+
+Server **1.4.1+** forwards the actual content type and raw body, including `text/plain`, form data, binary data or JSON, within the existing limits. A supplied browser `Origin` must be the same HTTPS hostname. Use GET/HEAD for read-only actions; callbacks must validate methods, body format, values and operation permissions. This library does not parse credentials or JSON for you. `DeviceRequest::contentType` is a fixed character array; it cannot be a null pointer.
+
+### Wake-on-LAN example
+
+Open **File → Examples → PrivateTunnelDevice → WakeOnLan**. Set your Wi-Fi, server hostname/path, device connection key, trusted root CA, publish domain, target MAC, broadcast address and a strong `WEB_PASSWORD`. The supplied values are placeholders. Disable **Require visitor password** on that device key if you want only the example's own login page.
+
+The page posts `text/plain` containing username, a newline and password. The board checks those credentials on both `/login` and `/wake`; the browser retains them in memory until logout or page close. There is no server-side session. Five failed attempts lock this example for sixty seconds, and wake requests have a ten-second cooldown. A successful response means a magic packet was sent, not confirmation that the PC booted.
+
+The ESP and PC must be on a LAN that permits the configured broadcast. Enable Wake-on-LAN on the PC's firmware/network adapter and provide standby power/network connectivity. UDP is sent locally by the board; this does not add UDP tunneling to PrivateTunnel. Certificate/time failures must still be resolved before connecting. [Example source](../../device/PrivateTunnelDevice/examples/WakeOnLan/WakeOnLan.ino).
 
 ## Write a callback
 
@@ -135,7 +149,7 @@ Protocol and application buffers are fixed inside the C++ object. Wi-Fi, TLS, ce
 
 ESP8266's BearSSL documentation describes roughly **6 KiB stack plus 22 KiB connection buffers** before other application costs. Do not promise a total 4–6 KiB client. Avoid a second TLS connection, large JSON documents or a second web server alongside this tunnel until measurements prove they fit. See [ESP8266 BearSSL documentation](https://arduino-esp8266.readthedocs.io/en/3.1.2/esp8266wifi/bearssl-client-secure-class.html).
 
-The server rejects extra requests with **503**, oversized bodies with **413**, long metadata with **431**, and unsupported write content types with **415**. It does not accumulate a request backlog on the board. A disconnected visitor cancels its stream. Response credit is returned after the public HTTP destination consumes the data.
+The server rejects extra requests with **503**, oversized bodies with **413**, and long metadata with **431**. It does not impose JSON-only bodies. A callback can still reject a format it does not support. The server does not accumulate a request backlog on the board. A disconnected visitor cancels its stream. Response credit is returned after the public HTTP destination consumes the data.
 
 ## Wire protocol
 

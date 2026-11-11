@@ -13,7 +13,7 @@
 | `server/device-bridge.js` | ตัวแปลงโปรโตคอลอุปกรณ์ที่สร้างโดยเซิร์ฟเวอร์ |
 | `shared/protocol.js`, `shared/tunnel-v4.js` | ส่วนควบคุมเดสก์ท็อปกับโปรโตคอลควบคุมสิทธิ์รับข้อมูลปัจจุบัน |
 | `shared/device-protocol.js` | ค่าคงที่และตรวจรูปแบบข้อความอุปกรณ์ |
-| `device/PrivateTunnelDevice/` | ไลบรารี Arduino ตัวอ่าน WebSocket แบบจำกัดขนาด และสองตัวอย่าง |
+| `device/PrivateTunnelDevice/` | ไลบรารี Arduino ตัวอ่าน WebSocket และตัวอย่าง HTTP ตั้งค่า กับสั่งเปิดคอม |
 | `tests/` | ทดสอบย่อย gateway Electron เริ่มอัตโนมัติ และตัวอ่านเฟิร์มแวร์ |
 | `deploy/`, `.github/` | ตัวอย่างบริการ/proxy และระบบทดสอบ/เผยแพร่ |
 
@@ -42,7 +42,7 @@ npm run check:termux
 
 ## คอมไพล์เฟิร์มแวร์
 
-ไม่ต้องใช้ไลบรารี WebSocket เพิ่ม CI ตรึง Arduino CLI **1.5.1**, core ESP32 **3.3.12** และ ESP8266 **3.1.2** คอมไพล์ `BasicHttp` กับ `ProvisionedHttp` ทั้งคู่ ตัวอย่างคำสั่งเมื่อมี core ที่ตรงแล้ว:
+ไม่ต้องใช้ไลบรารี WebSocket เพิ่ม CI ตรึง Arduino CLI **1.5.1**, core ESP32 **3.3.12** และ ESP8266 **3.1.2** คอมไพล์ `BasicHttp`, `ProvisionedHttp` และ `WakeOnLan` ทั้งสองชิป ตัวอย่างคำสั่งเมื่อมี core ที่ตรงแล้ว:
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32 --library device/PrivateTunnelDevice device/PrivateTunnelDevice/examples/ProvisionedHttp

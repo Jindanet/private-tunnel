@@ -10,7 +10,7 @@ The desktop app handles everyday sharing. The CLI handles terminals, servers and
 
 ## What is available
 
-Version **1.4.0** introduces the native device client. Device support is **experimental**: automated server tests and firmware compilation are provided; physical board, TLS peak heap and continuous Wi-Fi tests still require real hardware.
+Version **1.4.1** fixes device web logins: HTTP bodies keep their actual content type, and devices with their own login page can disable the extra visitor prompt. Device support is **experimental**: automated server tests and firmware compilation are provided; physical board, TLS peak heap and continuous Wi-Fi tests still require real hardware.
 
 | Client | Platforms | Services |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ node ptunnel.js startup status
 ## ESP32 and ESP8266
 
 1. Update the server and create an **ESP32 / ESP8266 device** key in administrator Settings. Save both the connection key and the separate visitor password, shown once.
-2. Install the release's `PrivateTunnelDevice-v1.4.0-arduino.zip` with **Sketch → Include Library → Add .ZIP Library** and install the matching ESP core. You can also copy `device/PrivateTunnelDevice` into the sketchbook's `libraries` folder.
+2. Install the release's `PrivateTunnelDevice-v1.4.1-arduino.zip` with **Sketch → Include Library → Add .ZIP Library** and install the matching ESP core. You can also copy `device/PrivateTunnelDevice` into the sketchbook's `libraries` folder.
 3. Open **File → Examples → PrivateTunnelDevice → ProvisionedHttp**, choose your board and upload.
 4. Open Serial Monitor at **115200**. Join `PrivateTunnel-Setup` Wi-Fi using its printed password. Open `http://192.168.4.1/` and save Wi-Fi, server hostname, full WebSocket path, device key and trusted root CA.
 5. The board restarts and reconnects automatically. Open its public `/status` URL using username `device` and the visitor password, or send that password as a Bearer token.
@@ -112,7 +112,7 @@ Internal listeners default to loopback: WebSocket **8080**, administration **808
 
 ## Security and current limitations
 
-Desktop HTTP and TCP services are public unless the service authenticates visitors; TCP also supports a server IP allowlist. **Device HTTP requires a separate visitor password.** A connection key authorizes tunnel creation and should not be given to website visitors.
+Desktop HTTP and TCP services are public unless the service authenticates visitors; TCP also supports a server IP allowlist. **Device HTTP requires a separate visitor password by default.** In Settings, turn off Require visitor password for a device key when its firmware handles sign-in; the change applies immediately without changing the board key. A connection key authorizes tunnel creation and should not be given to website visitors.
 
 The server handles forwarded traffic. WSS protects the client-to-server link; it is not end-to-end encryption through that server. This single-server project has no built-in MFA, administrator roles, automatic updater, device TCP/UDP or public multi-tenant abuse controls. Release binaries are unsigned. See [trust boundaries](docs/en/architecture.md) and [vulnerability reporting](SECURITY.md).
 
