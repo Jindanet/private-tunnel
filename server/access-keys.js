@@ -28,7 +28,7 @@ function isTimestamp(value) {
 
 function publicKey(key) {
   return { id: key.id, name: key.name, createdAt: key.createdAt, rotatedAt: key.rotatedAt, revokedAt: key.revokedAt,
-    ...(key.type === 'device' ? { type: 'device', visitorAuth: true } : {}) };
+    ...(key.type === 'device' ? { type: 'device', visitorAuth: key.visitorAuth !== false } : {}) };
 }
 
 function hashToken(token) {
@@ -45,7 +45,7 @@ function readRegistry(filePath, fileSystem) {
   let data;
   try { data = JSON.parse(raw); }
   catch { throw new Error('Client access key registry is invalid. Restore a valid registry before starting.'); }
-  const allowedFields = ['id', 'name', 'tokenHash', 'createdAt', 'rotatedAt', 'revokedAt', 'type', 'visitorTokenHash'];
+  const allowedFields = ['id', 'name', 'tokenHash', 'createdAt', 'rotatedAt', 'revokedAt', 'type', 'visitorTokenHash', 'visitorAuth'];
   const ids = new Set();
   if (!data || typeof data !== 'object' || Array.isArray(data) || data.version !== 1
     || Object.keys(data).some((field) => !['version', 'keys'].includes(field))
@@ -58,8 +58,9 @@ function readRegistry(filePath, fileSystem) {
       || typeof key.name !== 'string' || !key.name.trim() || key.name.length > 100 || /[\x00-\x1f\x7f]/.test(key.name)
       || !/^[a-f0-9]{64}$/.test(key.tokenHash || '') || !isTimestamp(key.createdAt)
       || !(key.rotatedAt === null || isTimestamp(key.rotatedAt))
-      || !(key.type === undefined && key.visitorTokenHash === undefined
-        || key.type === 'device' && /^[a-f0-9]{64}$/.test(key.visitorTokenHash || ''))
+      || !(key.type === undefined && key.visitorTokenHash === undefined && key.visitorAuth === undefined
+        || key.type === 'device' && /^[a-f0-9]{64}$/.test(key.visitorTokenHash || '')
+          && (key.visitorAuth === undefined || typeof key.visitorAuth === 'boolean'))
       || !(key.revokedAt === null || isTimestamp(key.revokedAt))) {
       throw new Error('Client access key registry is invalid. Restore a valid registry before starting.');
     }
@@ -102,9 +103,10 @@ function createAccessKeyStore({ filePath, dataDir, fileSystem = fs } = {}) {
     return result;
   }
 
-  function issue(name, { type = 'desktop' } = {}) {
+  function issue(name, { type = 'desktop', visitorAuth = true } = {}) {
     return mutate(() => {
       if (!['desktop', 'device'].includes(type)) throw inputError('Invalid client key type.');
+      if (typeof visitorAuth !== 'boolean' || type !== 'device' && !visitorAuth) throw inputError('Invalid device visitor authentication setting.');
       const checkedName = validateName(name);
       if (keys.length >= MAX_KEYS) throw inputError('The client key registry is full.');
       const id = crypto.randomUUID();
@@ -112,6 +114,7 @@ function createAccessKeyStore({ filePath, dataDir, fileSystem = fs } = {}) {
       const key = { id, name: checkedName, tokenHash: hashToken(token), createdAt: new Date().toISOString(), rotatedAt: null, revokedAt: null };
       const visitorToken = type === 'device' ? `ptv_${crypto.randomBytes(32).toString('base64url')}` : null;
       if (visitorToken) Object.assign(key, { type: 'device', visitorTokenHash: hashToken(visitorToken) });
+      if (type === 'device' && !visitorAuth) key.visitorAuth = false;
       persist([...keys, key]);
       return { key: publicKey(key), token, ...(visitorToken ? { visitorToken } : {}) };
     });
@@ -159,7 +162,24 @@ function createAccessKeyStore({ filePath, dataDir, fileSystem = fs } = {}) {
     if (!key || typeof token !== 'string' || !/^ptv_[A-Za-z0-9_-]{43}$/.test(token)) return false;
     return crypto.timingSafeEqual(Buffer.from(hashToken(token), 'hex'), Buffer.from(key.visitorTokenHash, 'hex'));
   }
-  return { list: () => keys.map(publicKey), issue, revoke, rotate, authenticate, authenticateVisitor };
+  function authorizeVisitor(id, token) {
+    const key = keys.find((item) => item.id === id && item.type === 'device' && !item.revokedAt);
+    return Boolean(key && (key.visitorAuth === false || authenticateVisitor(id, token)));
+  }
+  function setVisitorAuth(id, enabled) {
+    return mutate(() => {
+      validateId(id);
+      if (typeof enabled !== 'boolean') throw inputError('Visitor authentication must be true or false.');
+      const key = keys.find((item) => item.id === id);
+      if (!key) return null;
+      if (key.type !== 'device' || key.revokedAt) throw inputError('Visitor authentication can only be changed for an active device key.');
+      if ((key.visitorAuth !== false) === enabled) return publicKey(key);
+      const next = { ...key, visitorAuth: enabled };
+      persist(keys.map((item) => item.id === id ? next : item));
+      return publicKey(next);
+    });
+  }
+  return { list: () => keys.map(publicKey), issue, revoke, rotate, authenticate, authenticateVisitor, authorizeVisitor, setVisitorAuth };
 }
 
 module.exports = { createAccessKeyStore };

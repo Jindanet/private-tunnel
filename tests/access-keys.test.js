@@ -71,6 +71,34 @@ test('device secrets persist only as hashes and rotate/revoke together across re
   await assert.rejects(store.issue('bad type', { type: 'unknown' }), { code: 'EACCESSKEYINPUT' });
 });
 
+test('device visitor policy is explicit, survives restarts and never bypasses connection keys', async (t) => {
+  const { filePath } = location(t);
+  let store = createAccessKeyStore({ filePath });
+  const device = await store.issue('custom login', { type: 'device', visitorAuth: false });
+  const desktop = await store.issue('desktop');
+  assert.equal(device.key.visitorAuth, false);
+  assert.equal(store.authorizeVisitor(device.key.id), true);
+  assert.equal(store.authorizeVisitor(desktop.key.id), false);
+  assert.equal(store.authenticate(''), null);
+  assert.deepEqual(store.authenticate(device.token), device.key);
+  store = createAccessKeyStore({ filePath });
+  assert.equal(store.authorizeVisitor(device.key.id), true);
+  await store.setVisitorAuth(device.key.id, true);
+  store = createAccessKeyStore({ filePath });
+  assert.equal(store.authorizeVisitor(device.key.id), false);
+  assert.equal(store.authorizeVisitor(device.key.id, device.visitorToken), true);
+  await store.setVisitorAuth(device.key.id, false);
+  const rotated = await store.rotate(device.key.id);
+  assert.equal(rotated.key.visitorAuth, false);
+  assert.equal(store.authorizeVisitor(device.key.id), true);
+  await store.revoke(device.key.id);
+  assert.equal(store.authorizeVisitor(device.key.id), false);
+  assert.equal(store.authenticate(rotated.token), null);
+  await assert.rejects(store.setVisitorAuth(device.key.id, false), { code: 'EACCESSKEYINPUT' });
+  await assert.rejects(store.setVisitorAuth(desktop.key.id, false), { code: 'EACCESSKEYINPUT' });
+  await assert.rejects(store.issue('invalid setting', { type: 'device', visitorAuth: 'false' }), { code: 'EACCESSKEYINPUT' });
+});
+
 test('rotation preserves the owner and revocation persists without affecting other clients', async (t) => {
   const { filePath } = location(t);
   const store = createAccessKeyStore({ filePath });

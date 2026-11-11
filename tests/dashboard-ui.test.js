@@ -168,6 +168,24 @@ async function browserRun() {
     assert.equal(await evaluate(() => document.querySelector('#clientKeysList [data-key-action="rotate"]').textContent),'เปลี่ยนรหัส');
     assert.equal(await evaluate(() => document.getElementById('tunnel-token').closest('details').open),false);
 
+    await evaluate(() => {
+      const type=document.getElementById('clientKeyType');type.value='device';type.dispatchEvent(new Event('change'));
+      document.getElementById('clientKeyVisitorAuth').checked=false;
+      document.getElementById('clientKeyName').value='ESP with its own login';
+      document.getElementById('clientKeyForm').requestSubmit();
+    });
+    await until(() => !document.getElementById('clientKeyIssue').disabled && !!document.querySelector('[data-visitor-auth-id]'));
+    assert.equal(await evaluate(() => document.querySelector('[data-visitor-auth-id]').checked),false);
+    assert.equal(await evaluate(() => document.querySelector('[data-visitor-auth-id]').labels[0].textContent.trim()),'ให้ผู้ชมกรอกรหัสผ่านก่อนเข้าเว็บ');
+    await evaluate(() => document.querySelector('[data-visitor-auth-id]').click());
+    await until(() => !document.getElementById('clientKeyIssue').disabled && document.querySelector('[data-visitor-auth-id]').checked);
+    await evaluate(() => document.getElementById('clientKeysRefresh').click());
+    await until(() => !document.getElementById('clientKeysRefresh').disabled);
+    assert.equal(await evaluate(() => document.querySelector('[data-visitor-auth-id]').checked),true);
+    await evaluate(() => document.querySelector('[data-lang="en"]').click());
+    assert.equal(await evaluate(() => document.querySelector('[data-visitor-auth-id]').labels[0].textContent.trim()),'Require visitor password');
+    assert.equal(await evaluate(() => document.getElementById('clientKeySecret').value),'');
+
     const unsaved = await evaluate(() => {
       document.querySelector('[data-onboard="settings"]').click();
       const primary = document.getElementById('primary-domain');

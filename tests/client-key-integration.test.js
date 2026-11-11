@@ -253,13 +253,26 @@ test('native device wire uses a separate key, visitor authentication, bounded bo
     if (frame.type === T.READY) {
       assert.equal(p.readUInt16BE(), 512);assert.equal(p[2], 1);assert.equal(p.readUInt16BE(5), 1024);
       host = new URL(p.subarray(9).toString()).hostname;ready.resolve();
-    } else if (frame.type === T.OPEN) { ++opens;active = { id: frame.stream, body: [], credit: 512, offset: 0 }; }
+    } else if (frame.type === T.OPEN) {
+      ++opens;
+      const methodEnd = 4 + p[0], pathEnd = methodEnd + p.readUInt16BE(1);
+      active = { id: frame.stream, body: [], credit: 512, offset: 0,
+        method: p.subarray(4, methodEnd).toString(), path: p.subarray(methodEnd, pathEnd).toString(),
+        contentType: p.subarray(pathEnd).toString() };
+    }
     else if (frame.type === T.DATA) {
       active.body.push(p);const credit = Buffer.alloc(2);credit.writeUInt16BE(p.length);ws.send(packet(T.CREDIT, frame.stream, credit));
     } else if (frame.type === T.END && !held) {
       response = Buffer.concat(active.body);active.output = response.length ? response : Buffer.alloc(8192, 'd');
-      const type = Buffer.from('application/octet-stream'), header = Buffer.alloc(3 + type.length);
-      header.writeUInt16BE(200);header[2] = type.length;type.copy(header, 3);
+      let status = 200, contentType = 'application/octet-stream';
+      if (active.path === '/login') {
+        assert.equal(active.method, 'POST');assert.equal(active.contentType, 'text/plain');
+        status = response.equals(Buffer.from('admin\ncorrect-password')) ? 200 : 401;
+        active.output = Buffer.from(status === 200 ? '{"success":true}' : '{"error":"Invalid credentials"}');
+        contentType = 'application/json';
+      }
+      const type = Buffer.from(contentType), header = Buffer.alloc(3 + type.length);
+      header.writeUInt16BE(status);header[2] = type.length;type.copy(header, 3);
       ws.send(packet(T.RESPONSE, frame.stream, header));pump();
     } else if (frame.type === T.CREDIT && active) { active.credit += p.readUInt16BE();pump(); }
     else if (frame.type === T.CANCEL) { ++cancellations;active = null; }
@@ -272,9 +285,9 @@ test('native device wire uses a separate key, visitor authentication, bounded bo
   ws.send(packet(T.HELLO, 0, Buffer.concat([hello, ...fields])));
   await deadline(ready.promise, 'Device READY stalled');
   assert.equal(host, 'sensor-native.apps.example.test');
-  function request({ token = key.visitorToken, method = 'GET', body, headers = {}, chunked = false } = {}) {
+  function request({ token = key.visitorToken, method = 'GET', path = '/status', body, headers = {}, chunked = false } = {}) {
     return new Promise((resolve, reject) => {
-      const req = http.request({ host: LOOPBACK, port: remote.proxyPort, path: '/status', method, agent: false,
+      const req = http.request({ host: LOOPBACK, port: remote.proxyPort, path, method, agent: false,
         headers: { host, ...(token ? { authorization: `Bearer ${token}` } : {}),
           ...(body ? { 'content-type': 'application/json', ...(!chunked ? { 'content-length': body.length } : {}) } : {}), ...headers } }, (res) => {
         const chunks = [];res.on('data', (p) => chunks.push(p));res.on('error', reject);
@@ -295,6 +308,28 @@ test('native device wire uses a separate key, visitor authentication, bounded bo
   await waitFor(() => !active, 'Oversized upload was not cancelled');
   const basic = await request({ token: '', headers: { authorization: `Basic ${Buffer.from('device:' + key.visitorToken).toString('base64')}` } });
   assert.equal(basic.status, 200);
+  const policyPath = `${KEYS}/${key.key.id}/visitor-auth`;
+  for (const enabled of ['false', null, 0]) {
+    assert.equal((await remote.admin(policyPath, { method: 'POST', data: { enabled } })).status, 400);
+  }
+  const disabled = await remote.admin(policyPath, { method: 'POST', data: { enabled: false } });
+  assert.equal(disabled.status, 200);assert.equal(disabled.data.key.visitorAuth, false);
+  assert.equal(ws.readyState, WebSocket.OPEN, 'Changing visitor policy needs no board reconfiguration');
+  const login = await request({ token: '', path: '/login', method: 'POST', body: Buffer.from('admin\ncorrect-password'), headers: { 'content-type': 'text/plain' } });
+  assert.equal(login.status, 200);assert.deepEqual(JSON.parse(login.body), { success: true });
+  assert.equal(login.headers['www-authenticate'], undefined, 'No outer browser login when the application handles it');
+  const badLogin = await request({ token: '', path: '/login', method: 'POST', body: Buffer.from('admin\nwrong'), headers: { 'content-type': 'text/plain' } });
+  assert.equal(badLogin.status, 401);assert.deepEqual(JSON.parse(badLogin.body), { error: 'Invalid credentials' });
+  for (const type of ['application/x-www-form-urlencoded', 'application/octet-stream', '']) {
+    const body = Buffer.from([0, 1, 10, 0, 255]);
+    const echoed = await request({ token: '', method: 'POST', body, headers: { 'content-type': type } });
+    assert.equal(echoed.status, 200);assert.deepEqual(echoed.body, body);
+  }
+  assert.equal((await request({ token: '', method: 'POST', body: Buffer.alloc(1025), headers: { 'content-type': 'text/plain' } })).status, 413);
+  assert.equal((await request({ token: '', headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await remote.admin(policyPath, { method: 'POST', data: { enabled: true } })).status, 200);
+  assert.equal((await request({ token: '' })).status, 401, 'Re-enabling visitor auth applies to the next request');
+  assert.equal((await request()).status, 200, 'The existing visitor password remains valid');
   held = true;
   const pending = request();
   await waitFor(() => !!active, 'Held request not opened');

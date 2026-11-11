@@ -45,9 +45,6 @@ function handleProxy(req, res, publicHost, tunnelManager) {
       reject(431, 'Device request metadata is too large'); return;
     }
     if (Number(req.headers['content-length'] || 0) > MAX_BODY) { reject(413, 'Device request body exceeds 1024 bytes'); return; }
-    if (!['GET', 'HEAD'].includes(req.method) && !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) {
-      reject(415, 'Device writes require application/json'); return;
-    }
   }
   if (tunnel.pendingRequests.size >= (device ? 1 : 128)) {
     res.writeHead(503, { 'Content-Type': 'text/plain', 'Retry-After': '5' });

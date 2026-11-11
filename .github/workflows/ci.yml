@@ -41,7 +41,7 @@ jobs:
         run: |
           /tmp/arduino-cli core update-index --additional-urls "$BOARD_INDEX"
           /tmp/arduino-cli core install "$CORE" --additional-urls "$BOARD_INDEX"
-          for example in BasicHttp ProvisionedHttp; do
+          for example in BasicHttp ProvisionedHttp WakeOnLan; do
             /tmp/arduino-cli compile --fqbn "$FQBN" --library device/PrivateTunnelDevice --warnings all --output-dir "firmware/$example" "device/PrivateTunnelDevice/examples/$example"
           done
           g++ -std=c++17 -Wall -Wextra -Werror tests/device-wire.cpp -o /tmp/device-wire

@@ -114,6 +114,24 @@ test('client key administration requires the current admin session and reveals s
   assert.equal((await post(`${keysPath}/${crypto.randomUUID()}/revoke`, {})).status, 404);
   assert.equal((await post(`${keysPath}/invalid/revoke`, {})).status, 400);
 
+  const device = (await post(keysPath, { name: 'Firmware login', type: 'device' })).data;
+  const policyPath = `${keysPath}/${device.key.id}/visitor-auth`;
+  assert.equal((await post(policyPath, { enabled: false }, { cookie: '' })).status, 401);
+  assert.equal((await post(policyPath, { enabled: false }, { origin: 'http://evil.example.test' })).status, 403);
+  assert.equal(store.authorizeVisitor(device.key.id), false);
+  assert.equal((await post(policyPath, { enabled: 'false' })).status, 400);
+  assert.equal((await post(`${keysPath}/${bob.key.id}/visitor-auth`, { enabled: false })).status, 400);
+  failWrites = true;
+  assert.equal((await post(policyPath, { enabled: false })).status, 500);
+  assert.equal(store.authorizeVisitor(device.key.id), false);
+  failWrites = false;
+  const policy = await post(policyPath, { enabled: false });
+  assert.equal(policy.status, 200);assert.equal(policy.data.key.visitorAuth, false);
+  assert.equal(policy.data.token, undefined);assert.equal(policy.data.visitorToken, undefined);
+  assert.equal(store.authorizeVisitor(device.key.id), true);
+  assert.equal(createAccessKeyStore({ filePath }).authorizeVisitor(device.key.id), true);
+  assert.deepEqual(retired, [alice.key.id, alice.key.id], 'Visitor policy does not rotate or disconnect the board');
+
   async function holdMutation(route, prefix) {
     let held;
     const received = new Promise((resolve) => server.once('request', (req) => req.once('data', resolve)));
@@ -131,13 +149,15 @@ test('client key administration requires the current admin session and reveals s
   const heldIssue = await holdMutation(keysPath, '{"name":');
   const heldRevoke = await holdMutation(`${keysPath}/${bob.key.id}/revoke`, '{"unused":');
   const heldRotate = await holdMutation(`${keysPath}/${bob.key.id}/rotate`, '{"unused":');
+  const heldPolicy = await holdMutation(policyPath, '{"enabled":');
   const registryBeforeRace = fs.readFileSync(filePath, 'utf8');
   const passwordChange = await post(base + '/api/password', { password: 'replacement-client-key-api-password' });
   assert.equal(passwordChange.status, 200);
   heldIssue.request.end('"Stale session"}');
   heldRevoke.request.end('true}');
   heldRotate.request.end('true}');
-  assert.deepEqual(await Promise.all([heldIssue.result, heldRevoke.result, heldRotate.result]), [401, 401, 401]);
+  heldPolicy.request.end('true}');
+  assert.deepEqual(await Promise.all([heldIssue.result, heldRevoke.result, heldRotate.result, heldPolicy.result]), [401, 401, 401, 401]);
   assert.equal(fs.readFileSync(filePath, 'utf8'), registryBeforeRace);
   assert.equal(store.authenticate(bob.token).id, bob.key.id);
   assert.equal((await request(keysPath, { headers: { cookie } })).status, 401);

@@ -4,6 +4,7 @@ const clientKeysPanel = `
   <p class="settings-form-note" data-i18n="clientKeysIntro">Create a separate key for each person. Their apps keep their own reserved public addresses.</p>
   <form id="clientKeyForm">
     <div class="field"><label for="clientKeyType" data-i18n="clientKeyType">Client type</label><select id="clientKeyType"><option value="desktop" data-i18n="clientKeyDesktop">Desktop / CLI</option><option value="device" data-i18n="clientKeyDevice">ESP32 / ESP8266 device</option></select><small data-i18n="clientKeyDeviceHint">Device keys work only with device firmware. Rotation replaces both its connection key and visitor password.</small></div>
+    <div id="clientKeyVisitorChoice" class="field" hidden><label for="clientKeyVisitorAuth"><input id="clientKeyVisitorAuth" type="checkbox" checked style="width:auto;min-height:0"> <span data-i18n="deviceVisitorRequired">Require visitor password</span></label><small data-i18n="deviceVisitorPolicyHint">Turn off when your firmware handles sign-in. The public URL then opens directly; your firmware controls access.</small></div>
     <div class="field"><label for="clientKeyName" data-i18n="clientKeyName">Person or device name</label><input id="clientKeyName" name="client-name" maxlength="100" required autocomplete="off" data-i18n-placeholder="clientKeyNamePlaceholder" placeholder="For example, Alice's laptop"><small data-i18n="clientKeySetupHint">Send the new key and this server's address to its owner. They save both in the desktop app or CLI.</small></div>
     <div class="actions"><button type="submit" class="btn primary" id="clientKeyIssue" data-i18n="clientKeyIssue">Create client key</button><button type="button" class="btn secondary" id="clientKeysRefresh" data-i18n="clientKeysRefresh">Refresh list</button></div>
   </form>
@@ -22,6 +23,7 @@ const clientKeysPanel = `
 
 const clientKeysBehavior = String.raw`
 Object.assign(I18N.en,{
+  deviceVisitorRequired:'Require visitor password',deviceVisitorPolicyHint:'Turn off when your firmware handles sign-in. The public URL then opens directly; your firmware controls access.',deviceVisitorSaving:'Saving visitor access…',deviceVisitorSaved:'Visitor access saved. The change applies immediately; the board does not need a new connection key.',deviceVisitorNamed:'Require visitor password for {name}',
   clientKeyType:'Client type',clientKeyDesktop:'Desktop / CLI',clientKeyDevice:'ESP32 / ESP8266 device',clientKeyDeviceHint:'Device keys work only with device firmware. Rotation replaces both its connection key and visitor password.',deviceVisitorLabel:'Device visitor password',deviceVisitorHint:'Keep this separately from the connection key. Open the public URL with username device and this password, or use it as a Bearer token.',
   clientKeysHeading:'Client access keys',clientKeysIntro:'Create a separate key for each person. Their apps keep their own reserved public addresses.',
   clientKeyName:'Person or device name',clientKeyNamePlaceholder:"For example, Alice's laptop",clientKeySetupHint:'Send the new key and this server\'s address to its owner. They save both in the desktop app or CLI.',
@@ -39,6 +41,7 @@ Object.assign(I18N.en,{
   fieldTunnelToken:'Legacy shared key',legacySharedAccess:'Advanced: shared-key compatibility',legacySharedHint:'Unused by default. ALLOW_SHARED_TUNNEL_TOKEN=true enables this key for migration. Everyone using it shares one owner; use separate client keys above for new connections.'
 });
 Object.assign(I18N.th,{
+  deviceVisitorRequired:'ให้ผู้ชมกรอกรหัสผ่านก่อนเข้าเว็บ',deviceVisitorPolicyHint:'ปิดเมื่อเฟิร์มแวร์มีหน้าเข้าสู่ระบบเอง ที่อยู่สาธารณะจะเปิดตรงไปที่บอร์ด และเฟิร์มแวร์เป็นผู้ควบคุมสิทธิ์เข้าถึง',deviceVisitorSaving:'กำลังบันทึกการเข้าถึงของผู้ชม…',deviceVisitorSaved:'บันทึกแล้ว มีผลทันที บอร์ดไม่ต้องเปลี่ยนกุญแจเชื่อมต่อ',deviceVisitorNamed:'ให้ผู้ชมกรอกรหัสผ่านก่อนเข้าเว็บของ {name}',
   clientKeyType:'ประเภทไคลเอนต์',clientKeyDesktop:'เดสก์ท็อป / CLI',clientKeyDevice:'อุปกรณ์ ESP32 / ESP8266',clientKeyDeviceHint:'รหัสอุปกรณ์ใช้กับเฟิร์มแวร์อุปกรณ์เท่านั้น การเปลี่ยนรหัสจะเปลี่ยนทั้งรหัสเชื่อมต่อและรหัสผ่านเข้าชมเว็บ',deviceVisitorLabel:'รหัสผ่านเข้าชมเว็บอุปกรณ์',deviceVisitorHint:'เก็บแยกจากรหัสเชื่อมต่อ เปิดที่อยู่สาธารณะด้วยชื่อผู้ใช้ device และรหัสผ่านนี้ หรือใช้เป็น Bearer token',
   clientKeysHeading:'รหัสเชื่อมต่อแยกผู้ใช้',clientKeysIntro:'สร้างรหัสแยกให้แต่ละคน แอปของแต่ละคนจะมีที่อยู่สาธารณะที่สงวนไว้เป็นของตัวเอง',
   clientKeyName:'ชื่อผู้ใช้หรืออุปกรณ์',clientKeyNamePlaceholder:'เช่น แล็ปท็อปของคุณเอ',clientKeySetupHint:'ส่งรหัสใหม่และที่อยู่เซิร์ฟเวอร์นี้ให้เจ้าของ เพื่อนำไปบันทึกในแอปเดสก์ท็อปหรือ CLI',
@@ -95,6 +98,16 @@ function renderClientKeys(){
     if(key.type==='device')row.appendChild(create('small','',t('clientKeyDevice')));
     row.appendChild(create('small','',t(key.revokedAt?'clientKeyRevoked':'clientKeyActive')+' · '+t('clientKeyCreated',{date:new Date(key.createdAt).toLocaleString(currentLang==='th'?'th-TH':'en-US')})));
     if(!key.revokedAt){
+      if(key.type==='device'){
+        const field=create('div','field');
+        const label=create('label');const input=document.createElement('input');
+        input.type='checkbox';input.id='device-visitor-'+key.id;input.checked=key.visitorAuth!==false;
+        input.style.width='auto';input.style.minHeight='0';input.disabled=clientKeysBusy||clientKeysLoading;
+        input.dataset.visitorAuthId=key.id;input.setAttribute('aria-label',t('deviceVisitorNamed',{name:key.name}));
+        label.htmlFor=input.id;label.append(input,document.createTextNode(' '+t('deviceVisitorRequired')));
+        input.addEventListener('change',()=>changeDeviceVisitorAuth(key.id,input.checked));
+        field.append(label,create('small','',t('deviceVisitorPolicyHint')));row.appendChild(field);
+      }
       const actions=create('div','actions');
       ['rotate','revoke'].forEach((action)=>{
         const button=create('button',action==='revoke'?'btn danger':'btn secondary',t(action==='revoke'?'clientKeyRevoke':'clientKeyRotate'));
@@ -111,6 +124,8 @@ function renderClientKeys(){
   el('clientKeyIssue').disabled=clientKeysBusy||clientKeysLoading;
   el('clientKeyName').disabled=clientKeysBusy;
   el('clientKeyType').disabled=clientKeysBusy;
+  el('clientKeyVisitorAuth').disabled=clientKeysBusy;
+  el('clientKeyVisitorChoice').hidden=el('clientKeyType').value!=='device';
   el('clientKeysRefresh').disabled=clientKeysBusy||clientKeysLoading;
   el('clientKeyStatus').textContent=t(clientKeysMessage);
   el('clientKeyShow').textContent=t(el('clientKeySecret').type==='password'?'showKey':'hideKey');
@@ -140,7 +155,7 @@ async function issueClientKey(){
   const generation=clientKeysSecretGeneration;
   clientKeysBusy=true;clientKeysMessage='clientKeyCreating';renderClientKeys();
   try{
-    const result=await api(currentRoutes.adminApiBasePath+'/client-keys',{method:'POST',body:JSON.stringify({name:el('clientKeyName').value,type:el('clientKeyType').value})});
+    const result=await api(currentRoutes.adminApiBasePath+'/client-keys',{method:'POST',body:JSON.stringify({name:el('clientKeyName').value,type:el('clientKeyType').value,...(el('clientKeyType').value==='device'?{visitorAuth:el('clientKeyVisitorAuth').checked}:{})})});
     clientKeysData.push(result.key);clientKeysLoaded=true;el('clientKeyName').value='';clientKeysMessage='clientKeyIssued';
     revealClientKey(result,generation);
   }catch(error){clientKeysMessage=clientKeyErrorMessage(error,'clientKeySaveFailed');}
@@ -159,7 +174,17 @@ async function changeClientKey(id,action){
   }catch(error){clientKeysMessage=clientKeyErrorMessage(error,'clientKeySaveFailed');}
   finally{clientKeysBusy=false;renderClientKeys();}
 }
+async function changeDeviceVisitorAuth(id,enabled){
+  if(clientKeysBusy||clientKeysLoading)return;
+  clearClientKeySecret();clientKeysBusy=true;clientKeysMessage='deviceVisitorSaving';renderClientKeys();
+  try{
+    const result=await api(currentRoutes.adminApiBasePath+'/client-keys/'+encodeURIComponent(id)+'/visitor-auth',{method:'POST',body:JSON.stringify({enabled})});
+    clientKeysData=clientKeysData.map((key)=>key.id===id?result.key:key);clientKeysMessage='deviceVisitorSaved';
+  }catch(error){clientKeysMessage=clientKeyErrorMessage(error,'clientKeySaveFailed');}
+  finally{clientKeysBusy=false;renderClientKeys();}
+}
 el('clientKeyForm').addEventListener('submit',(event)=>{event.preventDefault();issueClientKey();});
+el('clientKeyType').addEventListener('change',()=>{el('clientKeyVisitorChoice').hidden=el('clientKeyType').value!=='device';});
 el('clientKeysRefresh').addEventListener('click',()=>loadClientKeys());
 el('clientKeyShow').addEventListener('click',()=>{
   const input=el('clientKeySecret');const show=input.type==='password';input.type=show?'text':'password';

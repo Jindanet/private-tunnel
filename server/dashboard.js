@@ -935,7 +935,7 @@ function createDashboard(tunnelManager, runtimeConfig, options = {}) {
     const clientKeyAction = pathname.startsWith(`${clientKeysPath}/`)
       ? pathname.slice(clientKeysPath.length + 1).split('/') : [];
     if ((pathname === clientKeysPath && ['GET', 'POST'].includes(req.method))
-      || (req.method === 'POST' && clientKeyAction.length === 2 && ['revoke', 'rotate'].includes(clientKeyAction[1]))) {
+      || (req.method === 'POST' && clientKeyAction.length === 2 && ['revoke', 'rotate', 'visitor-auth'].includes(clientKeyAction[1]))) {
       const store = options.accessKeyStore;
       if (!store) {
         sendJson(res, 503, { error: 'Client key management is unavailable.' }); return;
@@ -952,9 +952,13 @@ function createDashboard(tunnelManager, runtimeConfig, options = {}) {
             sendJson(res, 401, { error: 'Session expired. Sign in again.' }); return;
           }
           if (pathname === clientKeysPath) {
-            sendJson(res, 201, await store.issue(payload.name, { type: payload.type ?? 'desktop' })); return;
+            sendJson(res, 201, await store.issue(payload.name, { type: payload.type ?? 'desktop', visitorAuth: payload.visitorAuth === undefined ? true : payload.visitorAuth })); return;
           }
           const [id, action] = clientKeyAction;
+          if (action === 'visitor-auth') {
+            const key = await store.setVisitorAuth(id, payload.enabled);
+            sendJson(res, key ? 200 : 404, key ? { key } : { error: 'Client key was not found.' }); return;
+          }
           const result = await store[action](id);
           if (!result) { sendJson(res, 404, { error: 'Client key was not found.' }); return; }
           if (typeof options.onClientKeyRevoked === 'function') await options.onClientKeyRevoked(id);

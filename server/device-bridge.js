@@ -58,7 +58,7 @@ class DeviceBridge extends EventEmitter {
       const text = Buffer.from(header.slice(6), 'base64').toString('utf8');
       if (text.startsWith('device:')) token = text.slice(7);
     }
-    return this.accessKeys.authenticateVisitor(this.tunnelPrincipal.id, token);
+    return this.accessKeys.authorizeVisitor(this.tunnelPrincipal.id, token);
   }
   send(data) {
     if (Buffer.isBuffer(data)) {
