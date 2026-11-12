@@ -116,11 +116,11 @@ class TunnelManager {
       });
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code) => {
       closed = true;
       const removed = removeAssignedTunnel();
       if (removed) {
-        console.log(`[TunnelManager] Tunnel closed: ${removed.publicHost || removed.label || removed.tunnelKey}`);
+        console.log(`[TunnelManager] Tunnel closed: ${removed.publicHost || removed.label || removed.tunnelKey} (code ${code}; ${ws.tunnelFailure || 'WebSocket closed'})`);
       }
     });
 
@@ -133,6 +133,7 @@ class TunnelManager {
       if (ws.readyState === ws.OPEN) {
         if (ws.tunnelMissedPongs >= 2) {
           clearInterval(pingInterval);
+          ws.tunnelFailure = 'Two heartbeat replies missed';
           ws.terminate();
           return;
         }

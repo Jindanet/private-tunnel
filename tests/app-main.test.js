@@ -14,6 +14,7 @@ async function loadMain({available=true,startup=null}={}) {
   const handlers = new Map();
   const external = [];
   const writes = [];
+  const events = [], polls = [];
   let window;
   class FakeWindow extends EventEmitter {
     constructor(options) {
@@ -21,7 +22,7 @@ async function loadMain({available=true,startup=null}={}) {
       const contents=new EventEmitter(); contents.mainFrame={url:''};
       contents.session={setPermissionRequestHandler(){},setPermissionCheckHandler(){}};
       contents.setWindowOpenHandler=(fn)=>{contents.popup=fn;};
-      contents.send=()=>{};this.webContents=contents;
+      contents.send=(channel,payload)=>events.push({channel,payload});this.webContents=contents;
     }
     loadFile(file) {this.webContents.mainFrame.url=pathToFileURL(file).href;}
     show(){} focus(){}
@@ -39,12 +40,14 @@ async function loadMain({available=true,startup=null}={}) {
     unlinkSync(){throw Object.assign(new Error('No temporary file'),{code:'ENOENT'});}};
   const isolatedProcess={...process,env:{USERPROFILE:path.join(root,'tests','fake-home'),PTUNNEL_CONFIG_PATH:path.join(root,'tests','fake-home','desktop.json')}};
   const context={require:(name)=>name==='electron'?electron:name==='node:fs'?fakeFs:name==='../client/startup'&&startup?{createStartupManager:()=>startup}:realRequire(name),
-    __dirname:path.dirname(filename),process:isolatedProcess,console,Buffer,URL,setTimeout,clearTimeout,module:{exports:{}}};
+    __dirname:path.dirname(filename),process:isolatedProcess,console,Buffer,URL,
+    setTimeout:(callback,delay)=>{if(delay===3000){polls.push(callback);return {unref(){}};}return setTimeout(callback,delay);},
+    clearTimeout,module:{exports:{}}};
   vm.runInNewContext(fs.readFileSync(filename,'utf8'),context,{filename});
   assert.equal(writes.length,0,'No credentials are rewritten before Electron is ready');
   await new Promise((resolve)=>setImmediate(resolve));
   const trusted={sender:window.webContents,senderFrame:window.webContents.mainFrame};
-  return {handlers,trusted,window,writes,external};
+  return {handlers,trusted,window,writes,external,events,poll:()=>polls.at(-1)()};
 }
 
 test('actual main IPC rejects untrusted documents and validates privileged actions', async () => {
@@ -129,4 +132,20 @@ test('actual main IPC preserves non-secret settings while unavailable storage cl
   assert.equal(getConfig().token,null);
   assert.match(getConfig().credentialStorageError,/not saved/);
   for(const [,content] of writes){const disk=JSON.parse(content);assert.equal(disk.token,undefined);assert.equal(disk.credential,undefined);}
+});
+
+test('desktop polling cannot restore online status while a boot worker Stop is pending',async()=>{
+  const entries=[];
+  let finish;
+  const startup={status:()=>entries,control:()=>new Promise((resolve)=>{finish=()=>{entries[0].status='stopped';resolve({ok:true});};})};
+  const {handlers,trusted,events,poll}=await loadMain({startup});
+  const tunnel=handlers.get('add-tunnel')(trusted,{type:'tcp',port:3389});
+  entries.push({id:'service-id',clientId:tunnel.clientId,installed:true,status:'online',url:'example.test:30000'});
+  const stopping=handlers.get('stop-tunnel')(trusted,tunnel.id);
+  poll();
+  assert.equal(events.filter((event)=>event.channel==='tunnel-status').length,0,'No stale heartbeat during Stop');
+  const overlapping=await handlers.get('start-tunnel')(trusted,tunnel.id);
+  assert.match(overlapping.error,/already in progress/);
+  finish();assert.equal(await stopping,true);poll();
+  assert.ok(events.filter((event)=>event.channel==='tunnel-status').every((event)=>event.payload.status==='stopped'));
 });

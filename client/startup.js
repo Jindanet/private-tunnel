@@ -117,6 +117,43 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
     return `[Unit]\nDescription=PrivateTunnel boot tunnel\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nUser=${Number(user.uid)}\nGroup=${Number(user.gid)}\nExecStart=${command.map(unit).join(' ')}\n${electronNode ? 'Environment=ELECTRON_RUN_AS_NODE=1\n' : ''}${electronNode && env.APPIMAGE ? 'Environment=APPIMAGE_EXTRACT_AND_RUN=1\n' : ''}Restart=on-failure\nRestartPreventExitStatus=1 2\nRestartSec=15\nTimeoutStopSec=10\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n`;
   }
 
+  function windowsStop(info) {
+    return [
+      `$profilePath = ${ps(info.profilePath)}`,
+      `$stateDir = ${ps(info.stateDir)}`,
+      `$workerPattern = '(?i)(?:^|\\s)startup\\s+run\\s+--profile\\s+(?:"' + [Regex]::Escape($profilePath) + '"|' + [Regex]::Escape($profilePath) + ')(?:\\s|$)'`,
+      `function Get-TunnelWorkers { @(Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%--profile%'" | Where-Object { $_.CommandLine -match $workerPattern }) }`,
+      `$task = Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue`,
+      `$taskEnabled = $task -and $task.Settings.Enabled`,
+      `if ($taskEnabled) { Disable-ScheduledTask -TaskName $job | Out-Null }`,
+      `try {`,
+      `if (Test-Path -LiteralPath $stateDir) {`,
+      `$bootId = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')`,
+      `$pause = @{ bootId = $bootId } | ConvertTo-Json -Compress`,
+      `[IO.File]::WriteAllText((Join-Path $stateDir 'paused.json'), $pause)`,
+      `[IO.File]::WriteAllText((Join-Path $stateDir 'stop'), '')`,
+      `}`,
+      // Allow the worker to close its WebSocket and TCP streams voluntarily.
+      // Stopping only the PowerShell task can leave its Node child alive.
+      `$deadline = [DateTime]::UtcNow.AddSeconds(6)`,
+      `while (@(Get-TunnelWorkers).Count -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }`,
+      `if ($task) { Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue }`,
+      `foreach ($worker in @(Get-TunnelWorkers)) {`,
+      `$workerProcess = Get-Process -Id $worker.ProcessId -ErrorAction SilentlyContinue`,
+      // Creation time plus the exact profile argument protects against PID reuse.
+      `if ($workerProcess -and [Math]::Abs(($workerProcess.StartTime.ToUniversalTime() - $worker.CreationDate.ToUniversalTime()).TotalMilliseconds) -lt 1) { Stop-Process -InputObject $workerProcess -Force -ErrorAction SilentlyContinue }`,
+      `}`,
+      `$deadline = [DateTime]::UtcNow.AddSeconds(5)`,
+      `while ((@(Get-TunnelWorkers).Count -or (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }`,
+      `if (@(Get-TunnelWorkers).Count -or (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running') { throw 'The boot tunnel is still running. Stop was not confirmed.' }`,
+      `if (Test-Path -LiteralPath $stateDir) {`,
+      `$stopped = @{ status = 'stopped'; url = ''; error = $null; updatedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress`,
+      `[IO.File]::WriteAllText((Join-Path $stateDir 'status.json'), $stopped)`,
+      `}`,
+      `} finally { if ($taskEnabled) { Enable-ScheduledTask -TaskName $job | Out-Null } }`,
+    ];
+  }
+
   function installer(info, action, stage) {
     const installing = action === 'install';
     const stopping = action === 'stop' || action === 'remove';
@@ -134,8 +171,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
           `$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))`,
           `foreach ($rule in @(@('S-1-5-18','FullControl'),@('S-1-5-32-544','FullControl'),@('S-1-5-19','ReadAndExecute'),@($ownerSid,'ReadAndExecute'))) { $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($rule[0])), $rule[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }`,
           `Set-Acl -LiteralPath $dir -AclObject $acl`,
-          `Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue`,
-          `for ($wait = 0; $wait -lt 50 -and (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running'; $wait++) { Start-Sleep -Milliseconds 200 }`,
+          ...windowsStop(info),
           `Copy-Item -LiteralPath ${ps(stagedSource)} -Destination ${ps(info.runner)} -Force`,
           ...(!bundledBinary && !electronNode ? [`Copy-Item -LiteralPath ${ps(runtime)} -Destination ${ps(info.executable)} -Force`] : []),
           ...(electronNode ? [
@@ -150,6 +186,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
           `$stateAcl = Get-Acl -LiteralPath ${ps(info.stateDir)}`,
           `$stateAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier('S-1-5-19')), 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))`,
           `Set-Acl -LiteralPath ${ps(info.stateDir)} -AclObject $stateAcl`,
+          ...['stop', 'paused.json', 'status.json'].map((name) => `Remove-Item -LiteralPath ${ps(filePath.join(info.stateDir, name))} -Force -ErrorAction SilentlyContinue`),
           `$ownedFiles = @(${[info.runner,info.profilePath,info.definition,...(!bundledBinary&&!electronNode?[info.executable]:[])].map(ps).join(', ')})`,
           ...(electronNode ? [`$ownedFiles += @(${ps(info.runtimeDir)}); $ownedFiles += @(Get-ChildItem -LiteralPath ${ps(info.runtimeDir)} -Recurse -Force | ForEach-Object { $_.FullName })`] : []),
           `foreach ($ownedFile in $ownedFiles) { $fileAcl = Get-Acl -LiteralPath $ownedFile; $fileAcl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544'))); Set-Acl -LiteralPath $ownedFile -AclObject $fileAcl }`,
@@ -160,15 +197,18 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
           `Register-ScheduledTask -TaskName $job -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'PrivateTunnel: starts at boot before sign-in' -Force | Out-Null`,
           `Start-ScheduledTask -TaskName $job`);
       } else if (action === 'remove') {
-        content.push(`Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue`,
-          `for ($wait = 0; $wait -lt 50 -and (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running'; $wait++) { Start-Sleep -Milliseconds 200 }`,
+        content.push(...windowsStop(info),
           `Unregister-ScheduledTask -TaskName $job -Confirm:$false -ErrorAction SilentlyContinue`,
-          ...[info.profilePath, info.runner, info.definition, ...(!bundledBinary && !electronNode ? [info.executable] : [])].map((file) => `Remove-Item -LiteralPath ${ps(file)} -Force -ErrorAction SilentlyContinue`));
+          ...[info.profilePath, info.definition].map((file) => `if (Test-Path -LiteralPath ${ps(file)}) { Remove-Item -LiteralPath ${ps(file)} -Force }`),
+          // Executables can remain locked by scanners after the worker exits.
+          // That must not resurrect an already unregistered startup job.
+          ...[info.runner, ...(!bundledBinary && !electronNode ? [info.executable] : [])].map((file) => `if (Test-Path -LiteralPath ${ps(file)}) { try { Remove-Item -LiteralPath ${ps(file)} -Force } catch { [IO.File]::WriteAllText(${ps(path.join(stage, 'cleanup-pending'))}, 'runtime') } }`));
         if (electronNode) content.push(`$runtimeRoot = [IO.Path]::GetFullPath(${ps(info.runtimeDir)})`,
           `$serviceRoot = [IO.Path]::GetFullPath($dir) + [IO.Path]::DirectorySeparatorChar`,
           `if (!$runtimeRoot.StartsWith($serviceRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime cleanup must stay inside its service directory.' }`,
-          `if (Test-Path -LiteralPath $runtimeRoot) { if ((Get-Item -LiteralPath $runtimeRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime cleanup cannot follow a link.' }; Remove-Item -LiteralPath $runtimeRoot -Recurse -Force }`);
-      } else content.push(`${stopping ? 'Stop' : 'Start'}-ScheduledTask -TaskName $job`);
+          `if (Test-Path -LiteralPath $runtimeRoot) { if ((Get-Item -LiteralPath $runtimeRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime cleanup cannot follow a link.' }; try { Remove-Item -LiteralPath $runtimeRoot -Recurse -Force } catch { [IO.File]::WriteAllText(${ps(path.join(stage, 'cleanup-pending'))}, 'runtime') } }`);
+      } else if (stopping) content.push(...windowsStop(info));
+      else content.push(...['stop', 'paused.json', 'status.json'].map((name) => `Remove-Item -LiteralPath ${ps(filePath.join(info.stateDir, name))} -Force -ErrorAction SilentlyContinue`), `Start-ScheduledTask -TaskName $job`);
       content.push(`[IO.File]::WriteAllText(${ps(path.join(stage, 'success'))}, 'ok')`);
       return `$ErrorActionPreference = 'Stop'\r\ntry {\r\n${content.join('\r\n')}\r\n} catch { [IO.File]::WriteAllText(${ps(path.join(stage, 'error'))}, $_.Exception.Message); exit 1 }\r\n`;
     }
@@ -241,13 +281,14 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       else if (platform === 'darwin') await run('/usr/bin/osascript', ['-e', `do shell script ${JSON.stringify('/bin/sh ' + sh(script))} with administrator privileges`]);
       else await run(gui ? 'pkexec' : 'sudo', ['/bin/sh', script], { interactive: !gui });
       if (!fs.existsSync(path.join(stage, 'success'))) throw new Error('Startup installation was not confirmed. No startup entry was saved.');
+      return { cleanupPending: fs.existsSync(path.join(stage, 'cleanup-pending')) };
     } catch (error) {
       const detailPath = path.join(stage, 'error');
       const detail = fs.existsSync(detailPath) ? fs.readFileSync(detailPath, 'utf8') : error.message;
       throw new Error(`Startup ${action} failed: ${detail}`);
     } finally {
       // Remove only the known staging files, never arbitrary recursive paths.
-      for (const name of ['profile.json', 'runner', 'definition', windows ? 'install.ps1' : 'install.sh', 'success', 'error']) {
+      for (const name of ['profile.json', 'runner', 'definition', windows ? 'install.ps1' : 'install.sh', 'success', 'error', 'cleanup-pending']) {
         try { fs.unlinkSync(path.join(stage, name)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       }
       fs.rmdirSync(stage);
@@ -278,12 +319,12 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
     const manifest = load();
     const entry = manifest.entries.find((item) => item.id === id);
     if (!entry) throw new Error('Startup tunnel not found. Run startup status to list IDs.');
-    await apply(describe(id), action);
+    const result = await apply(describe(id), action);
     if (action === 'remove') {
       manifest.entries = manifest.entries.filter((item) => item.id !== id);
       writePrivate(manifestPath, JSON.stringify(manifest, null, 2));
     }
-    return true;
+    return { ok: true, ...result };
   }
 
   let mutations = Promise.resolve();

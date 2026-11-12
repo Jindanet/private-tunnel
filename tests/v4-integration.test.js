@@ -315,6 +315,50 @@ test('v4 TCP preserves an upload larger than its window and the response after v
   assert.deepEqual(tunnel.errors, []);
 });
 
+test('v4 TCP preserves simultaneous binary traffic, idle heartbeats and traffic after idle', {timeout:120000}, async(t)=>{
+  let service;
+  const incoming=[],outgoing=[];
+  let uploadBytes=0,downloadBytes=0;
+  const local=trackServer(t,net.createServer((socket)=>{
+    service=socket;
+    socket.on('data',(chunk)=>{incoming.push(chunk);uploadBytes+=chunk.length;});
+  }));
+  const port=await listen(local),remote=await gateway(t);
+  const tunnel=await connectTunnel(t,port,remote.wsPort,{tunnelType:'tcp'});
+  assertSelected(tunnel,4);
+  const publicPort=Number(new URL(`tcp://${tunnel.assignment.url}`).port);
+  const visitor=net.createConnection({host:LOOPBACK,port:publicPort});
+  t.after(()=>visitor.destroy());
+  visitor.on('data',(chunk)=>{outgoing.push(chunk);downloadBytes+=chunk.length;});
+  const failures=[];visitor.on('error',(error)=>failures.push(error));
+  await once(visitor,'connect');await waitFor(()=>service,'The local TCP service was not connected');
+  async function sendParts(socket,payload){
+    const sizes=[1,31,8191,65537];
+    for(let offset=0,i=0;offset<payload.length;i++){
+      const end=Math.min(payload.length,offset+sizes[i%sizes.length]);
+      if(!socket.write(payload.subarray(offset,end)))await once(socket,'drain');
+      offset=end;
+    }
+  }
+  const up=bytes(3*1024*1024+41,19),down=bytes(3*1024*1024+73,211);
+  // Slow both consumers temporarily to exercise independent credit windows.
+  service.pause();visitor.pause();
+  const resume=setTimeout(()=>{service.resume();visitor.resume();},150);
+  t.after(()=>clearTimeout(resume));
+  await Promise.all([sendParts(visitor,up),sendParts(service,down)]);
+  await waitFor(()=>uploadBytes===up.length&&downloadBytes===down.length,'Duplex TCP bytes stalled');
+  // Exercise two real 30-second server heartbeat cycles with no TCP payload.
+  await new Promise((resolve)=>setTimeout(resolve,65000));
+  assert.equal(visitor.destroyed,false);assert.equal(service.destroyed,false);
+  assert.equal(tunnel.client.connected,true);assert.equal(tunnel.client.reconnectAttempts,0);
+  const afterUp=bytes(128*1024+7,37),afterDown=bytes(128*1024+13,181);
+  await Promise.all([sendParts(visitor,afterUp),sendParts(service,afterDown)]);
+  await waitFor(()=>uploadBytes===up.length+afterUp.length&&downloadBytes===down.length+afterDown.length,'TCP bytes after idle stalled');
+  assert.deepEqual(Buffer.concat(incoming),Buffer.concat([up,afterUp]));
+  assert.deepEqual(Buffer.concat(outgoing),Buffer.concat([down,afterDown]));
+  assert.deepEqual(failures,[]);assert.deepEqual(tunnel.errors,[]);
+});
+
 test('an explicit v1 client option still negotiates and forwards through the actual gateway', { timeout: TIMEOUT }, async (t) => {
   const payload = bytes(96 * 1024 + 71, 67);
   const local = trackServer(t, http.createServer((req, res) => req.pipe(res)));

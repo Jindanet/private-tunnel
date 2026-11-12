@@ -642,6 +642,11 @@ async function doStartup(id, enabled) {
     if (result?.error || !result?.ok) throw new Error(result?.error || t('requestFailed'));
     tunnel.startup = result.enabled;
     Object.assign(state, { status: enabled ? 'connecting' : 'stopped', url: '', error: null });
+    if (result.cleanupPending) {
+      state.actionError = currentLang === 'th'
+        ? 'ปิดการเริ่มตอนบูตแล้ว แต่ไฟล์โปรแกรมบางส่วนยังถูกล็อก รีสตาร์ต Windows ก่อนลบโฟลเดอร์บริการเก่า'
+        : 'Boot startup removed. Some program files are locked. Restart Windows before deleting the old service folder.';
+    }
     toast(currentLang === 'th' ? (enabled ? 'ติดตั้งการเริ่มตอนบูตแล้ว' : 'ปิดการเริ่มตอนบูตแล้ว') : (enabled ? 'Boot startup installed' : 'Boot startup removed'));
   } catch (error) { state.actionError = error.message || t('requestFailed'); }
   finally { pendingActions.delete(id); refreshCard(id); updateDot(); }

@@ -302,7 +302,10 @@ async function main(argv = process.argv.slice(2)) {
     const id = positional[2] || (entries.length === 1 ? entries[0].id : '');
     const targets = id === 'all' && action === 'remove' ? entries.map((entry) => entry.id) : [id];
     if (!id) throw new Error('Choose a tunnel ID from startup status.');
-    for (const target of targets) await startup.control(target, action);
+    for (const target of targets) {
+      const result = await startup.control(target, action);
+      if (result.cleanupPending) console.warn('Startup removed. Some runtime files are locked; restart Windows before deleting the old service folder.');
+    }
     console.log(`Startup ${action} complete.`);
     return;
   }

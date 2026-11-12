@@ -12,7 +12,7 @@ function browserBridge() {
   const fixture = window.__rendererFixture = {
     config: { serverUrl: '', token: '', tunnels: [] },
     checks: [], adds: [], saves: 0, pendingChecks: [], manualChecks: false,
-    startFailure: '', addFailure: '', checkFailure: '', serverFailure: false, startupFailure: '',
+    startFailure: '', addFailure: '', checkFailure: '', serverFailure: false, startupFailure: '', cleanupPending: false,
     emitStatus: () => {}, emitRequest: () => {},
   };
   window.api = {
@@ -55,7 +55,7 @@ function browserBridge() {
       await pause(20);
       if(fixture.startupFailure)return {error:fixture.startupFailure};
       fixture.config.tunnels.find((tunnel)=>tunnel.id===id).startup=enabled;
-      return {ok:true,enabled};
+      return {ok:true,enabled,cleanupPending:fixture.cleanupPending};
     },
     deleteTunnel: async () => true,
     copyText: async (value) => { fixture.copied = value; },
@@ -256,7 +256,10 @@ async function browserChecks() {
   ensure(!startupToggle().checked&&document.querySelector('.url-error').textContent.includes('cancelled'),'Cancelled installation keeps startup off and shows error');
   fixture.startupFailure='';startupToggle().click();
   await pause(40);ensure(startupToggle().checked,'Successful installation turns startup on');
-  startupToggle().click();await pause(40);ensure(!startupToggle().checked,'Startup can be removed');
+  fixture.cleanupPending=true;
+  startupToggle().click();await pause(40);ensure(!startupToggle().checked,'Startup can be removed even if runtime cleanup is pending');
+  ensure(document.querySelector('.url-error').textContent.includes('locked'),'Locked runtime cleanup is explained without claiming startup is still installed');
+  fixture.cleanupPending=false;
   fixture.startupFailure='Administrator approval cancelled';startupToggle().click();await pause(40);
   ensure(getComputedStyle(document.querySelector('.tcard-url')).display!=='none'&&document.querySelector('.url-error').textContent.includes('cancelled'),'Stopped cards show startup installation errors');
   fixture.startupFailure='';

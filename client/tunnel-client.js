@@ -37,6 +37,7 @@ class TunnelClient {
     this.onDisconnected = options.onDisconnected || (() => {});
     this.onRequest = options.onRequest || (() => {});
     this.onError = options.onError || (() => {});
+    this.onDiagnostic = options.onDiagnostic || (() => {});
 
     // HTTP: requestId -> active local request/response stream state
     this.requestStreams = new Map();
@@ -112,7 +113,9 @@ class TunnelClient {
         return;
       }
       if (this.shouldReconnect) {
-        this.onDisconnected();
+        const message = ws.tunnelFailure || `Tunnel WebSocket closed (code ${code}); active TCP sessions were closed.`;
+        this.onDiagnostic(message);
+        this.onDisconnected({ code, message });
         this._reconnect();
       }
     });
@@ -230,6 +233,7 @@ class TunnelClient {
     if (this.tcpSockets.has(connId) || this.tcpSockets.size >= 128) return;
     const modern = getTransportVersion(this.ws) === DATA_TRANSPORT_VERSION;
     const sock = net.createConnection({ host: this.localHost, port: this.localPort, allowHalfOpen: modern });
+    let socketError = null;
     sock.setNoDelay(true);
     sock.setKeepAlive(true, 30000);
     // RDP/SSH can be healthy while their application stream is idle. The
@@ -249,6 +253,7 @@ class TunnelClient {
 
     sock.on('close', (hadError) => {
       this.tcpSockets.delete(connId);
+      this.onDiagnostic(`TCP ${connId} closed: ${socketError || (sock._tunnelRemoteReset ? 'remote reset' : hadError ? 'socket error' : 'socket closed')}; read=${sock.bytesRead || 0} written=${sock.bytesWritten || 0} eof=${Boolean(sock.readableEnded)} finished=${Boolean(sock.writableFinished)}`);
       if (!sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished)
         && this.ws && this.ws.readyState === this.ws.OPEN) {
         sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
@@ -259,7 +264,7 @@ class TunnelClient {
       this.onRequest({ method: 'TCP', path: `connected → localhost:${this.localPort}`, statusCode: 200, latency: 0 });
     });
 
-    sock.on('error', () => {}); // close performs the stream reset once.
+    sock.on('error', (error) => { socketError = error.code || 'socket error'; }); // close resets once.
   }
 
   _handleTcpClose(connId) {
@@ -427,7 +432,10 @@ class TunnelClient {
     clearTimeout(this.serverSilenceTimer);
     this.serverSilenceTimer = setTimeout(() => {
       this.serverSilenceTimer = null;
-      if (this.ws === ws && ws.readyState === ws.OPEN && this.shouldReconnect) ws.terminate();
+      if (this.ws === ws && ws.readyState === ws.OPEN && this.shouldReconnect) {
+        ws.tunnelFailure = 'No server messages for 90 seconds; reconnecting.';
+        ws.terminate();
+      }
     }, 90000);
     this.serverSilenceTimer.unref?.();
   }

@@ -76,7 +76,7 @@ test('generated installers escape hostile path characters and parse without exec
   const powershell = process.platform==='win32'?'powershell.exe':null;
   if (powershell) {
     const command = '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors) | Out-Null; if($errors.Count){$errors | ForEach-Object ToString; exit 1}';
-    for (const content of [script,boot.definition(info),boot.installer(info,'remove',directory)]) {
+    for (const content of [script,boot.definition(info),...['remove','start','stop'].map((action)=>boot.installer(info,action,directory))]) {
       const result = spawnSync(powershell,['-NoProfile','-NonInteractive','-Command',command],{input:content,encoding:'utf8',windowsHide:true});
       assert.equal(result.status,0,result.stdout+result.stderr);
     }
@@ -200,6 +200,40 @@ test('a PID reused by another process cannot block the tunnel after a crash or r
   const worker=runStartup(filename,{Client:IdleClient});
   assert.ok(worker,'Foreign process PID is not an active startup worker');
   worker.stop();
+});
+
+test('a stopped boot worker cannot reconnect on a task retry, but resumes on a new boot', (t) => {
+  const directory=fixture(t),stateDir=path.join(directory,'state'),filename=path.join(directory,'service.json');
+  writePrivate(filename,JSON.stringify({version:1,profile:PROFILE,stateDir}));
+  const pausePath=path.join(stateDir,'paused.json');
+  writePrivate(pausePath,JSON.stringify({bootId:'boot-one'}));
+  let connections=0;
+  class Client { connect(){connections++;} disconnect(){} }
+  assert.equal(runStartup(filename,{Client,bootId:()=> 'boot-one'}),null);
+  assert.equal(connections,0);
+  assert.ok(fs.existsSync(pausePath),'A retry must not consume the pause');
+  assert.equal(runStartup(filename,{Client,bootId:()=> 'boot-one'}),null);
+  writePrivate(path.join(stateDir,'stop'),'');
+  const worker=runStartup(filename,{Client,bootId:()=> 'boot-two'});
+  assert.equal(connections,1);
+  assert.ok(!fs.existsSync(pausePath));assert.ok(!fs.existsSync(path.join(stateDir,'stop')));
+  worker.stop();
+});
+
+test('runtime cleanup warnings do not retain a removed startup job, even with missing profile files',async(t)=>{
+  const directory=fixture(t);
+  const boot=manager(directory,process.platform,{run:async(_command,args)=>{
+    fs.writeFileSync(path.join(stagedDirectory(args),'success'),'ok');
+  }});
+  const info=await boot.enable(PROFILE);
+  assert.equal(boot.status()[0].installed,false);
+  const removing=manager(directory,process.platform,{run:async(_command,args)=>{
+    const stage=stagedDirectory(args);
+    fs.writeFileSync(path.join(stage,'cleanup-pending'),'runtime');
+    fs.writeFileSync(path.join(stage,'success'),'ok');
+  }});
+  assert.deepEqual(await removing.control(info.id,'remove'),{ok:true,cleanupPending:true});
+  assert.equal(removing.status().length,0);
 });
 
 async function deadline(promise) {

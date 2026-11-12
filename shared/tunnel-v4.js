@@ -74,8 +74,9 @@ function getTransportVersion(ws) {
   return current(ws) ? DATA_TRANSPORT_VERSION : base.PROTOCOL_VERSION;
 }
 
-function fail(state) {
+function fail(state, reason = 'Invalid v4 transport') {
   if (state.closed) return false;
+  state.ws.tunnelFailure = reason;
   try { state.ws.terminate(); } catch { try { state.ws.close(1002, 'Invalid v4 transport'); } catch {} }
   disposeState(state);
   return false;
@@ -83,11 +84,11 @@ function fail(state) {
 
 function rawSend(state, payload) {
   if (!open(state)) { disposeState(state); return false; }
-  if ((state.ws.bufferedAmount || 0) + Buffer.byteLength(payload) > WS_HARD_LIMIT) return fail(state);
+  if ((state.ws.bufferedAmount || 0) + Buffer.byteLength(payload) > WS_HARD_LIMIT) return fail(state, 'v4 WebSocket buffer limit exceeded');
   try {
-    state.ws.send(payload, { compress: false }, (error) => { if (error) fail(state); });
+    state.ws.send(payload, { compress: false }, (error) => { if (error) fail(state, 'v4 WebSocket write failed'); });
     return !state.closed;
-  } catch { return fail(state); }
+  } catch { return fail(state, 'v4 WebSocket write failed'); }
 }
 
 function findRecord(state, id) {
@@ -146,7 +147,7 @@ function sentControl(state, entry) {
 function queueControl(state, payload, record = null, kind = 'control', afterData = false) {
   const bytes = Buffer.byteLength(payload);
   if (!open(state)) return false;
-  if (bytes > MAX_CONTROL_QUEUE_BYTES || state.controlQueuedBytes + bytes > MAX_CONTROL_QUEUE_BYTES) return fail(state);
+  if (bytes > MAX_CONTROL_QUEUE_BYTES || state.controlQueuedBytes + bytes > MAX_CONTROL_QUEUE_BYTES) return fail(state, 'v4 control queue limit exceeded');
   const entry = { payload, bytes, record, kind, afterData };
   if (record) record.controlPending++;
   if (!state.controls.length && controlReady(entry) && (state.ws.bufferedAmount || 0) < WS_HIGH_WATER) {
@@ -450,9 +451,9 @@ function decodeDataFrame(data, ws) {
   const id = base.bytesToUuid(data.subarray(1, 17));
   const record = findRecord(state, id);
   if (type === CREDIT) {
-    if (data.length !== 21 || !record) { fail(state); return null; }
+    if (data.length !== 21 || !record) { fail(state, 'Invalid v4 credit record'); return null; }
     const bytes = data.readUInt32BE(17);
-    if (!bytes || bytes > record.sentOutstanding || bytes > state.sentOutstandingBytes) { fail(state); return null; }
+    if (!bytes || bytes > record.sentOutstanding || bytes > state.sentOutstandingBytes) { fail(state, 'Invalid v4 credit amount'); return null; }
     record.sentOutstanding -= bytes;
     state.sentOutstandingBytes -= bytes;
     for (const candidate of state.records.values()) ready(state, candidate);
@@ -469,7 +470,7 @@ function decodeDataFrame(data, ws) {
     || (!record.reset && record.remoteEnded)
     || credit > WINDOW - record.receivedOutstanding
     || credit > CONNECTION_WINDOW - state.receivedOutstandingBytes) {
-    fail(state);
+    fail(state, 'Invalid v4 data frame or receive window exceeded');
     return null;
   }
   record.receivedOutstanding += credit;

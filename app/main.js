@@ -27,6 +27,14 @@ let config = { token: null, tunnels: [] };
 let credentialStorageError = null;
 let startupManager = null;
 let startupPoll = null;
+const bootActions = new Set();
+
+async function runBootAction(id, operation) {
+  if (bootActions.has(id)) throw new Error('A boot service action is already in progress.');
+  bootActions.add(id);
+  try { return await operation(); }
+  finally { bootActions.delete(id); }
+}
 
 function bootManager() {
   if (!startupManager) startupManager = createStartupManager({ configPath: CONFIG_PATH, channel: 'desktop', gui: true,
@@ -44,6 +52,7 @@ function pollBootServices() {
   try {
     const entries = bootManager().status();
     for (const tunnel of config.tunnels) {
+      if (bootActions.has(tunnel.id)) continue;
       const entry = entries.find((item) => item.clientId === tunnel.clientId);
       if (entry) mainWindow?.webContents.send('tunnel-status', { id: tunnel.id, status: entry.installed ? entry.status : 'error',
         url: entry.url, error: entry.installed ? entry.error : 'Boot service files are missing. Turn startup off, then on to reinstall.' });
@@ -340,21 +349,23 @@ handleTrusted('set-tunnel-startup', async (_, payload) => {
   if (!tunnel || typeof payload.enabled !== 'boolean') return { error: 'Choose a saved tunnel and startup setting.' };
   try {
     validateTunnelInput(tunnel);
-    const entry = bootEntry(tunnel);
-    if (!payload.enabled) {
-      if (entry) await bootManager().control(entry.id, 'remove');
+    return await runBootAction(tunnel.id, async () => {
+      const entry = bootEntry(tunnel);
+      if (!payload.enabled) {
+        const removed = entry ? await bootManager().control(entry.id, 'remove') : null;
+        mainWindow?.webContents.send('tunnel-status', { id: tunnel.id, status: 'stopped', url: '' });
+        return { ok: true, enabled: false, cleanupPending: Boolean(removed?.cleanupPending) };
+      }
+      if (!config.serverUrl || !config.token || credentialStorageError) return { error: 'Save and unlock the server profile before enabling startup.' };
+      pendingStarts.delete(tunnel.id);
+      tunnelInstances.get(tunnel.id)?.disconnect();
+      tunnelInstances.delete(tunnel.id);
       mainWindow?.webContents.send('tunnel-status', { id: tunnel.id, status: 'stopped', url: '' });
-      return { ok: true, enabled: false };
-    }
-    if (!config.serverUrl || !config.token || credentialStorageError) return { error: 'Save and unlock the server profile before enabling startup.' };
-    pendingStarts.delete(tunnel.id);
-    tunnelInstances.get(tunnel.id)?.disconnect();
-    tunnelInstances.delete(tunnel.id);
-    mainWindow?.webContents.send('tunnel-status', { id: tunnel.id, status: 'stopped', url: '' });
-    const installed = await bootManager().enable({ serverUrl: config.serverUrl, token: config.token,
-      tunnelType: tunnel.type, localHost: 'localhost', localPort: tunnel.port, clientId: tunnel.clientId,
-      publishDomain: tunnel.publishDomain, publishMode: tunnel.publishMode, desiredSubdomain: tunnel.desiredSubdomain });
-    return { ok: true, enabled: true, note: installed.note };
+      const installed = await bootManager().enable({ serverUrl: config.serverUrl, token: config.token,
+        tunnelType: tunnel.type, localHost: 'localhost', localPort: tunnel.port, clientId: tunnel.clientId,
+        publishDomain: tunnel.publishDomain, publishMode: tunnel.publishMode, desiredSubdomain: tunnel.desiredSubdomain });
+      return { ok: true, enabled: true, note: installed.note };
+    });
   } catch (error) { return { error: error.message }; }
 });
 
@@ -444,7 +455,7 @@ function deleteSavedTunnel(id) {
 handleTrusted('delete-tunnel', (_, id) => {
   const tunnel = config.tunnels.find((item) => item.id === id);
   const entry = bootEntry(tunnel);
-  if (entry) return bootManager().control(entry.id, 'remove').then(() => deleteSavedTunnel(id));
+  if (entry) return runBootAction(id, () => bootManager().control(entry.id, 'remove').then(() => deleteSavedTunnel(id)));
   return deleteSavedTunnel(id);
 });
 
@@ -453,7 +464,7 @@ handleTrusted('start-tunnel', async (_, id) => {
   if (!tunnel) return { error: 'Tunnel not found' };
   const entry = bootEntry(tunnel);
   if (entry) {
-    try { await bootManager().control(entry.id, 'start'); return { ok: true }; }
+    try { await runBootAction(id, () => bootManager().control(entry.id, 'start')); return { ok: true }; }
     catch (error) { return { error: error.message }; }
   }
   try { validateTunnelInput(tunnel); } catch (error) { return { error: error.message }; }
@@ -488,9 +499,9 @@ handleTrusted('start-tunnel', async (_, id) => {
       if (tunnelInstances.get(id) !== client) return;
       mainWindow?.webContents.send('tunnel-status', { id, status: 'online', url });
     },
-    onDisconnected: () => {
+    onDisconnected: (info) => {
       if (tunnelInstances.get(id) !== client) return;
-      mainWindow?.webContents.send('tunnel-status', { id, status: 'reconnecting', url: '' });
+      mainWindow?.webContents.send('tunnel-status', { id, status: 'reconnecting', url: '', error: info?.message || null });
     },
     onRequest: (info) => {
       if (tunnelInstances.get(id) !== client) return;
@@ -518,17 +529,17 @@ handleTrusted('start-tunnel', async (_, id) => {
   return { ok: true };
 });
 
-handleTrusted('stop-tunnel', (_, id) => {
-  const entry = bootEntry(config.tunnels.find((item) => item.id === id));
-  if (entry) return bootManager().control(entry.id, 'stop').then(() => {
-    mainWindow?.webContents.send('tunnel-status', { id, status: 'stopped', url: '' });
-    return true;
-  });
+handleTrusted('stop-tunnel', async (_, id) => {
   pendingStarts.delete(id);
   const client = tunnelInstances.get(id);
+  tunnelInstances.delete(id);
   if (client) {
     client.disconnect();
-    tunnelInstances.delete(id);
+  }
+  const entry = bootEntry(config.tunnels.find((item) => item.id === id));
+  if (entry) {
+    try { await runBootAction(id, () => bootManager().control(entry.id, 'stop')); }
+    catch (error) { return { error: error.message }; }
   }
   mainWindow?.webContents.send('tunnel-status', { id, status: 'stopped', url: '' });
   return true;
