@@ -16,7 +16,7 @@ const { MSG } = require('../shared/protocol');
 const execute = promisify(execFile);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve,ms));
 const ps = (value) => "'" + String(value).replaceAll("'","''") + "'";
-const powershell = (command) => execute('powershell.exe',['-NoProfile','-NonInteractive','-Command',WINDOWS_POWERSHELL_INIT+command],{windowsHide:true,timeout:45000});
+const powershell = (command) => execute('powershell.exe',['-NoProfile','-NonInteractive','-Command',WINDOWS_POWERSHELL_INIT+"$ErrorActionPreference='Stop'; "+command+'; exit 0'],{windowsHide:true,timeout:45000});
 async function waitFor(predicate) {
   const end=Date.now()+25000;
   while(!predicate()){if(Date.now()>end)throw new Error('Windows worker state timed out');await delay(100);}
