@@ -181,6 +181,35 @@ function pendingResponse(tunnel, res = response()) {
   return pending;
 }
 
+test('TCP idle expiry is disabled by default and an explicit server policy still expires idle peers', async () => {
+  for (const configured of [undefined, 0, 1000]) {
+    const { manager, servers } = fixture({ runtimeConfig: { tcpIdleTimeoutMs: configured } });
+    const ws = socket(), tunnel = activeTunnel(manager, ws, { tcp: true });
+    await manager._startTcpServer(ws, tunnel);
+    const visitor = new EventEmitter();visitor.remoteAddress = '127.0.0.1';visitor.written = [];
+    let timeout = null;
+    visitor.setTimeout = (ms, callback) => { timeout = { ms, callback }; };
+    visitor.setNoDelay = () => {};
+    visitor.setKeepAlive = (enabled) => { visitor.keepalive = enabled; };
+    visitor.write = (data) => { visitor.written.push(Buffer.from(data));return true; };
+    visitor.destroy = () => { visitor.destroyed = true;visitor.emit('close', false); };
+    servers[0].emit('connection', visitor);
+    const id = ws.messages.find((msg) => msg.type === MSG.TCP_CONNECT).connId;
+    if (timeout?.ms && timeout.ms <= 600000) timeout.callback();
+    assert.equal(Boolean(visitor.destroyed), configured === 1000);
+    assert.equal(visitor.keepalive, true);
+    if (configured !== 1000) {
+      const payload = Buffer.from([3, 0, 255, 0, 7]);
+      manager._handleBinaryFrame(null, tunnel.tunnelKey, { frameType: FRAME_TCP_DATA, requestId: id, data: payload });
+      assert.deepEqual(Buffer.concat(visitor.written), payload, 'Data still forwards after the former five-minute idle limit');
+    } else assert.equal(tunnel.tcpConnections.size, 0);
+    manager._removeTunnel(tunnel.tunnelKey);
+  }
+  for (const invalid of [-1, 'bad', 0.5, 2147483648]) {
+    assert.throws(() => fixture({ runtimeConfig: { tcpIdleTimeoutMs: invalid } }), /TCP_IDLE_TIMEOUT_MS/);
+  }
+});
+
 test('concurrent opens are bounded while response traffic still progresses during a pending save', async () => {
   const save = deferred();
   let saves = 0;

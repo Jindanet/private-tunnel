@@ -232,7 +232,8 @@ class TunnelClient {
     const sock = net.createConnection({ host: this.localHost, port: this.localPort, allowHalfOpen: modern });
     sock.setNoDelay(true);
     sock.setKeepAlive(true, 30000);
-    sock.setTimeout(300000, () => sock.destroy());
+    // RDP/SSH can be healthy while their application stream is idle. The
+    // server owns an optional idle policy; keepalive detects dead TCP peers.
     this.tcpSockets.set(connId, sock);
     this.onRequest({ method: 'TCP', path: `→ localhost:${this.localPort}`, statusCode: 0, latency: 0 });
 

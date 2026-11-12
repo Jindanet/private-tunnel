@@ -23,6 +23,11 @@ class TunnelManager {
       throw new Error('HTTP_IDLE_TIMEOUT_MS must be an integer between 50 and 3600000.');
     }
     this.requestIdleTimeoutMs = idleTimeout;
+    const tcpIdleTimeout = Number(this.runtimeConfig.tcpIdleTimeoutMs ?? 0);
+    if (!Number.isSafeInteger(tcpIdleTimeout) || tcpIdleTimeout < 0 || tcpIdleTimeout > 2147483647) {
+      throw new Error('TCP_IDLE_TIMEOUT_MS must be an integer between 0 and 2147483647 (0 disables idle expiry).');
+    }
+    this.tcpIdleTimeoutMs = tcpIdleTimeout;
     if (this.runtimeConfig.tcpBindHost && !net.isIP(this.runtimeConfig.tcpBindHost)) {
       throw new Error('TCP_BIND_HOST must be a local interface IP address.');
     }
@@ -892,7 +897,7 @@ class TunnelManager {
       const connId = crypto.randomUUID();
       tunnel.tcpConnections.set(connId, sock);
       tunnel.stats.connections++;
-      sock.setTimeout(5 * 60 * 1000, () => sock.destroy());
+      if (this.tcpIdleTimeoutMs) sock.setTimeout(this.tcpIdleTimeoutMs, () => sock.destroy());
       sock.setNoDelay?.(true);
       sock.setKeepAlive?.(true, 30000);
 

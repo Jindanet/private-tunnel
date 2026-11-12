@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { EventEmitter } = require('node:events');
-const { MSG } = require('../shared/protocol');
+const { MSG, FRAME_TCP_DATA, encodeDataFrame } = require('../shared/protocol');
 
 function timers() {
   const intervals = new Set();
@@ -148,7 +148,7 @@ test('heartbeat eviction releases an assigned HTTP host through normal socket te
   assert.equal(f.time.intervals.size, 0);
 });
 
-function clientFixture(random = 0.5) {
+function clientFixture(random = 0.5, netOverride = null) {
   const time = timers();
   const filename = path.resolve(__dirname, '../client/tunnel-client.js');
   const localRequire = createRequire(filename);
@@ -159,6 +159,7 @@ function clientFixture(random = 0.5) {
     module, Buffer, URL, Math: math,
     require(name) {
       if (name === 'ws') return Socket;
+      if (name === 'node:net' && netOverride) return netOverride;
       if (name === 'node:os') return { hostname: () => 'test', platform: () => 'test', release: () => 'test', arch: () => 'test' };
       return localRequire(name);
     },
@@ -172,6 +173,30 @@ function clientFixture(random = 0.5) {
   });
   return { time, client, errors };
 }
+
+test('a healthy local TCP stream survives ten virtual idle minutes and accepts subsequent bytes', () => {
+  let time, stream;
+  const f = clientFixture(0.5, { createConnection() {
+    stream = new EventEmitter();stream.destroyed = false;stream.written = [];
+    stream.setNoDelay = () => {};
+    stream.setKeepAlive = (enabled, delay) => { stream.keepalive = { enabled, delay }; };
+    stream.setTimeout = (ms, callback) => { if (ms) time.setTimeout(callback, ms); };
+    stream.write = (data) => { stream.written.push(Buffer.from(data));return true; };
+    stream.destroy = () => { stream.destroyed = true;stream.emit('close', false); };
+    return stream;
+  } });
+  time = f.time;
+  const ws = f.client.ws = new Socket();ws.open();
+  const id = 'b0000000-0000-4000-8000-000000000001';
+  f.client._handleTcpConnect(id);
+  for (const timer of [...time.timeouts]) if (timer.delay <= 600000) time.fire(timer);
+  assert.equal(stream.destroyed, false, 'Idle expiry must not terminate RDP/SSH at five minutes');
+  assert.deepEqual(stream.keepalive, { enabled: true, delay: 30000 });
+  const payload = Buffer.from([0, 255, 3, 0, 20, 1]);
+  f.client._handleBinaryFrame(encodeDataFrame(FRAME_TCP_DATA, id, payload));
+  assert.deepEqual(Buffer.concat(stream.written), payload);
+  f.client._clearTcpSockets();
+});
 
 test('a silent server is terminated locally and retried, while heartbeat refresh and disconnect clear the watchdog', () => {
   const f = clientFixture();

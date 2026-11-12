@@ -28,6 +28,7 @@ const PROXY_PORT = process.env.PROXY_PORT || 8082;
 const INTERNAL_HOST = process.env.INTERNAL_HOST || '127.0.0.1';
 const runtimeConfig = {
   requestIdleTimeoutMs: process.env.HTTP_IDLE_TIMEOUT_MS ?? 30000,
+  tcpIdleTimeoutMs: process.env.TCP_IDLE_TIMEOUT_MS ?? 0,
   requireDataTransportV4: process.env.REQUIRE_DATA_TRANSPORT_V4 !== 'false',
   tcpBindHost: process.env.TCP_BIND_HOST || undefined,
   tcpVisitorAllowlist: process.env.TCP_VISITOR_ALLOWLIST || '',
