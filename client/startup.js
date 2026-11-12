@@ -10,7 +10,7 @@ const { spawn } = require('node:child_process');
 const { requireSecureServerWebSocketUrl } = require('./server-url');
 // A CLI launched from PowerShell 7 can inherit its incompatible module path.
 // These helpers deliberately use Windows PowerShell's own built-in modules.
-const WINDOWS_POWERSHELL_INIT = "$env:PSModulePath = Join-Path $PSHOME 'Modules'; ";
+const WINDOWS_POWERSHELL_INIT = "$env:PSModulePath = $PSHOME + '\\Modules'; ";
 
 const sh = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
 const ps = (value) => "'" + String(value).replace(/'/g, "''") + "'";
