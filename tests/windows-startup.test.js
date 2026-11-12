@@ -37,7 +37,7 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
   });
   const sid=(await powershell('[Security.Principal.WindowsIdentity]::GetCurrent().User.Value')).stdout.trim();
   const boot=createStartupManager({configPath:path.join(directory,'user.json'),systemRoot:path.join(directory,'startup'),
-    bundlePath:path.resolve(__dirname,'../ptunnel.js'),env:process.env,user:{sid},
+    bundlePath:path.resolve(__dirname,'../ptunnel.js'),env:process.env,user:{sid},electronNode:true,runtime:require('electron'),
     run:async(_command,args)=>{
       const script=/ -File "([^"]+install\.ps1)"/.exec(args.at(-1))?.[1];assert.ok(script);
       await execute('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script],{windowsHide:true,timeout:45000});
@@ -77,7 +77,7 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
 
   // A different process holds the copied runtime open. It must survive Stop;
   // removal still clears the installed job, profile and manifest with a warning.
-  foreign=spawn(info.executable,['-e','setInterval(()=>{},1000)','--','startup','run','--profile',info.profilePath+'.other'],{windowsHide:true,stdio:'ignore'});
+  foreign=spawn(info.executable,['-e','setInterval(()=>{},1000)','--','startup','run','--profile',info.profilePath+'.other'],{windowsHide:true,stdio:'ignore',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}});
   await once(foreign,'spawn');await delay(500);
   fs.unlinkSync(info.profilePath); // Recover the partial state reported in GUI.
   const removed=await boot.control(info.id,'remove');

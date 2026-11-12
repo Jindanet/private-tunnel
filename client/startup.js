@@ -200,6 +200,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       } else if (action === 'remove') {
         content.push(...windowsStop(info),
           `Unregister-ScheduledTask -TaskName $job -Confirm:$false -ErrorAction SilentlyContinue`,
+          `if (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue) { throw 'The startup task could not be removed. Service files were preserved.' }`,
           ...[info.profilePath, info.definition].map((file) => `if (Test-Path -LiteralPath ${ps(file)}) { Remove-Item -LiteralPath ${ps(file)} -Force }`),
           // Executables can remain locked by scanners after the worker exits.
           // That must not resurrect an already unregistered startup job.
