@@ -132,7 +132,7 @@ var require_ui = __commonJS({
 var require_startup = __commonJS({
   "client/startup.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs"), os = require("node:os"), path = require("node:path"), crypto = require("node:crypto"), { spawn } = require("node:child_process"), { requireSecureServerWebSocketUrl } = require_server_url(), sh = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'", ps = (value) => "'" + String(value).replace(/'/g, "''") + "'", xml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]), unit = (value) => '"' + String(value).replace(/%/g, "%%").replace(/\$/g, "$$").replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    var fs = require("node:fs"), os = require("node:os"), path = require("node:path"), crypto = require("node:crypto"), { spawn } = require("node:child_process"), { requireSecureServerWebSocketUrl } = require_server_url(), WINDOWS_POWERSHELL_INIT = "$env:PSModulePath = Join-Path $PSHOME 'Modules'; ", sh = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'", ps = (value) => "'" + String(value).replace(/'/g, "''") + "'", xml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]), unit = (value) => '"' + String(value).replace(/%/g, "%%").replace(/\$/g, "$$").replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
     function writePrivate(filename, data) {
       fs.mkdirSync(path.dirname(filename), { recursive: !0, mode: 448 });
       let temporary = `${filename}.${crypto.randomUUID()}.tmp`;
@@ -255,7 +255,8 @@ var require_startup = __commonJS({
 # PrivateTunnel boot job
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 nohup ${command.map(sh).join(" ")} >/dev/null 2>&1 &
-` : platform === "win32" ? `${electronNode ? `$env:ELECTRON_RUN_AS_NODE = '1'\r
+` : platform === "win32" ? `${WINDOWS_POWERSHELL_INIT}\r
+${electronNode ? `$env:ELECTRON_RUN_AS_NODE = '1'\r
 ` : ""}& ${ps(info.executable)} @(${info.args.map(ps).join(", ")})\r
 exit $LASTEXITCODE\r
 ` : platform === "darwin" ? `<?xml version="1.0" encoding="UTF-8"?>
@@ -375,7 +376,8 @@ WantedBy=multi-user.target
             "$serviceRoot = [IO.Path]::GetFullPath($dir) + [IO.Path]::DirectorySeparatorChar",
             "if (!$runtimeRoot.StartsWith($serviceRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime cleanup must stay inside its service directory.' }",
             `if (Test-Path -LiteralPath $runtimeRoot) { if ((Get-Item -LiteralPath $runtimeRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime cleanup cannot follow a link.' }; try { Remove-Item -LiteralPath $runtimeRoot -Recurse -Force } catch { [IO.File]::WriteAllText(${ps(path.join(stage, "cleanup-pending"))}, 'runtime') } }`
-          )) : stopping ? content.push(...windowsStop(info)) : content.push(...["stop", "paused.json", "status.json"].map((name) => `Remove-Item -LiteralPath ${ps(filePath.join(info.stateDir, name))} -Force -ErrorAction SilentlyContinue`), "Start-ScheduledTask -TaskName $job"), content.push(`[IO.File]::WriteAllText(${ps(path.join(stage, "success"))}, 'ok')`), `$ErrorActionPreference = 'Stop'\r
+          )) : stopping ? content.push(...windowsStop(info)) : content.push(...["stop", "paused.json", "status.json"].map((name) => `Remove-Item -LiteralPath ${ps(filePath.join(info.stateDir, name))} -Force -ErrorAction SilentlyContinue`), "Start-ScheduledTask -TaskName $job"), content.push(`[IO.File]::WriteAllText(${ps(path.join(stage, "success"))}, 'ok')`), `${WINDOWS_POWERSHELL_INIT}\r
+$ErrorActionPreference = 'Stop'\r
 try {\r
 ${content.join(`\r
 `)}\r
@@ -431,7 +433,7 @@ ${content.join(`\r
         try {
           if (profile && writePrivate(path.join(stage, "profile.json"), JSON.stringify({ version: 1, profile, stateDir: info.stateDir })), profile && !bundledBinary && writePrivate(path.join(stage, "runner"), fs.readFileSync(source)), writePrivate(path.join(stage, "definition"), (windows ? "\uFEFF" : "") + definition(info)), writePrivate(script, (windows ? "\uFEFF" : "") + installer(info, action, stage)), windows) {
             let inner = `-NoProfile -ExecutionPolicy Bypass -File "${script}"`;
-            await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$p = Start-Process -FilePath powershell.exe -ArgumentList ${ps(inner)} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`]);
+            await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `${WINDOWS_POWERSHELL_INIT}$p = Start-Process -FilePath powershell.exe -ArgumentList ${ps(inner)} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`]);
           } else termux ? await run(filePath.join(env.PREFIX || "/data/data/com.termux/files/usr", "bin/sh"), [script]) : process.getuid?.() === 0 ? await run("/bin/sh", [script]) : platform === "darwin" ? await run("/usr/bin/osascript", ["-e", `do shell script ${JSON.stringify("/bin/sh " + sh(script))} with administrator privileges`]) : await run(gui ? "pkexec" : "sudo", ["/bin/sh", script], { interactive: !gui });
           if (!fs.existsSync(path.join(stage, "success"))) throw new Error("Startup installation was not confirmed. No startup entry was saved.");
           return { cleanupPending: fs.existsSync(path.join(stage, "cleanup-pending")) };
@@ -474,7 +476,7 @@ ${content.join(`\r
       };
       return { enable: serial(enable), control: serial(control), status, describe, definition, installer, manifestPath, provider };
     }
-    module2.exports = { createStartupManager, validateProfile, writePrivate, readJson, execute };
+    module2.exports = { createStartupManager, validateProfile, writePrivate, readJson, execute, WINDOWS_POWERSHELL_INIT };
   }
 });
 
@@ -3652,7 +3654,7 @@ var require_tunnel_client = __commonJS({
 var require_startup_runner = __commonJS({
   "client/startup-runner.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs"), path = require("node:path"), { spawnSync } = require("node:child_process"), { validateProfile, writePrivate, readJson } = require_startup(), TunnelClient = require_tunnel_client(), { version } = require_package();
+    var fs = require("node:fs"), path = require("node:path"), { spawnSync } = require("node:child_process"), { validateProfile, writePrivate, readJson, WINDOWS_POWERSHELL_INIT } = require_startup(), TunnelClient = require_tunnel_client(), { version } = require_package();
     function windowsBootId() {
       let result = spawnSync(
         "powershell.exe",
@@ -3660,7 +3662,7 @@ var require_startup_runner = __commonJS({
           "-NoProfile",
           "-NonInteractive",
           "-Command",
-          "[Console]::Write((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'))"
+          WINDOWS_POWERSHELL_INIT + "[Console]::Write((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'))"
         ],
         { encoding: "utf8", windowsHide: !0, timeout: 1e4, maxBuffer: 4096 }
       );
@@ -3682,7 +3684,7 @@ var require_startup_runner = __commonJS({
           if (error.code === "ENOENT") return !1;
           throw error;
         }
-      let command = process.platform === "win32" ? "powershell.exe" : "/bin/ps", args = process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if($p){[Console]::Write($p.CommandLine)}`] : ["-p", String(pid), "-o", "command="], result = spawnSync(command, args, { encoding: "utf8", windowsHide: !0, timeout: 5e3, maxBuffer: 65536 });
+      let command = process.platform === "win32" ? "powershell.exe" : "/bin/ps", args = process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", `${WINDOWS_POWERSHELL_INIT}$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if($p){[Console]::Write($p.CommandLine)}`] : ["-p", String(pid), "-o", "command="], result = spawnSync(command, args, { encoding: "utf8", windowsHide: !0, timeout: 5e3, maxBuffer: 65536 });
       if (result.error || result.status !== 0) throw new Error("Cannot verify the previous startup worker. Inspect runner.lock before restarting.");
       return process.platform === "win32" ? result.stdout.toLowerCase().includes(profilePath.toLowerCase()) : result.stdout.includes(profilePath);
     }
