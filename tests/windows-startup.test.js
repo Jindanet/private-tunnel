@@ -54,22 +54,29 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
   info=await boot.enable({serverUrl:`ws://127.0.0.1:${gateway.address().port}`,token:'ci-only-key-at-least-thirty-two-characters',clientId:crypto.randomUUID(),tunnelType:'tcp',localPort:9});
   await waitFor(()=>boot.status()[0].status==='online');
   assert.equal(connections,1);
+  // Simulate an installed launcher from before this fix. Stop must repair its
+  // pause guard without replacing its original executable/arguments.
+  const definition=fs.readFileSync(info.definition,'utf8');
+  fs.writeFileSync(info.definition,'\ufeff'+definition.slice(definition.indexOf('$env:ELECTRON_RUN_AS_NODE')));
   await boot.control(info.id,'stop');
   assert.equal(gateway.clients.size,0,'Stop acknowledges a closed tunnel, not just a stopped wrapper');
   assert.equal(boot.status()[0].status,'stopped');
+  const originalRunner=fs.readFileSync(info.runner);
+  const stubbornSource=`const fs=require('node:fs'),path=require('node:path');const profile=JSON.parse(fs.readFileSync(process.argv.at(-1)));fs.writeFileSync(path.join(profile.stateDir,'status.json'),JSON.stringify({status:'online',pid:process.pid,updatedAt:new Date().toISOString()}));setInterval(()=>{},1000);`;
+  fs.writeFileSync(info.runner,stubbornSource);
   await powershell(`Start-ScheduledTask -TaskName ${ps(info.job)}`);
   await delay(6000); // Simulate a queued OS retry without an explicit user Start.
   assert.equal(connections,1,'A retry cannot undo Stop in the same boot');
   assert.equal(boot.status()[0].status,'stopped','Old online heartbeats cannot reappear');
+  fs.writeFileSync(info.runner,originalRunner);
   await boot.control(info.id,'start');
   await waitFor(()=>connections===2&&boot.status()[0].status==='online');
   await boot.control(info.id,'stop');
 
   // An old/stuck worker ignores cooperative stop. The exact profile argument
   // identifies it even if its PowerShell parent is already gone.
-  const stubborn=path.join(directory,'stubborn.cjs');
-  fs.writeFileSync(stubborn,`const fs=require('node:fs'),path=require('node:path');const profile=JSON.parse(fs.readFileSync(process.argv.at(-1)));fs.writeFileSync(path.join(profile.stateDir,'status.json'),JSON.stringify({status:'online',pid:process.pid,updatedAt:new Date().toISOString()}));setInterval(()=>{},1000);`);
-  orphan=spawn(process.execPath,[stubborn,'startup','run','--profile',info.profilePath],{windowsHide:true,stdio:'ignore'});
+  fs.writeFileSync(info.runner,stubbornSource);
+  orphan=spawn(process.execPath,[info.runner,'startup','run','--profile',info.profilePath],{windowsHide:true,stdio:'ignore'});
   await waitFor(()=>JSON.parse(fs.readFileSync(info.statusPath)).pid===orphan.pid);
   const orphanExit=once(orphan,'exit');
   await boot.control(info.id,'stop');await orphanExit;

@@ -110,18 +110,24 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
     });
   }
 
+  function windowsPauseGuard(info) {
+    const pause = ps(filePath.join(info.stateDir, 'paused.json'));
+    const stop = ps(filePath.join(info.stateDir, 'stop'));
+    return `# PrivateTunnel boot pause guard v1\r\n${WINDOWS_POWERSHELL_INIT}\r\n$ErrorActionPreference = 'Stop'\r\nif (Test-Path -LiteralPath ${pause}) {\r\n$pause = Get-Content -LiteralPath ${pause} -Raw | ConvertFrom-Json\r\n$bootId = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')\r\nif ($pause.bootId -eq $bootId) { exit 0 }\r\nRemove-Item -LiteralPath ${pause} -Force\r\nRemove-Item -LiteralPath ${stop} -Force -ErrorAction SilentlyContinue\r\n}\r\n`;
+  }
+
   function definition(info) {
     const command = [info.executable, ...info.args];
     if (termux) {
       const prefix = env.PREFIX || '/data/data/com.termux/files/usr';
       return `#!${prefix}/bin/sh\n# PrivateTunnel boot job\ncommand -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock\nnohup ${command.map(sh).join(' ')} >/dev/null 2>&1 &\n`;
     }
-    if (platform === 'win32') return `${WINDOWS_POWERSHELL_INIT}\r\n${electronNode ? "$env:ELECTRON_RUN_AS_NODE = '1'\r\n" : ''}& ${ps(info.executable)} @(${info.args.map(ps).join(', ')})\r\nexit $LASTEXITCODE\r\n`;
+    if (platform === 'win32') return `${windowsPauseGuard(info)}${electronNode ? "$env:ELECTRON_RUN_AS_NODE = '1'\r\n" : ''}& ${ps(info.executable)} @(${info.args.map(ps).join(', ')})\r\nexit $LASTEXITCODE\r\n`;
     if (platform === 'darwin') return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.jindanet.${info.job}</string><key>UserName</key><string>${xml(user.username)}</string><key>ProgramArguments</key><array>${command.map((arg) => `<string>${xml(arg)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>30</integer><key>EnvironmentVariables</key><dict>${electronNode ? '<key>ELECTRON_RUN_AS_NODE</key><string>1</string>' : ''}</dict></dict></plist>\n`;
     return `[Unit]\nDescription=PrivateTunnel boot tunnel\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nUser=${Number(user.uid)}\nGroup=${Number(user.gid)}\nExecStart=${command.map(unit).join(' ')}\n${electronNode ? 'Environment=ELECTRON_RUN_AS_NODE=1\n' : ''}${electronNode && env.APPIMAGE ? 'Environment=APPIMAGE_EXTRACT_AND_RUN=1\n' : ''}Restart=on-failure\nRestartPreventExitStatus=1 2\nRestartSec=15\nTimeoutStopSec=10\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n`;
   }
 
-  function windowsStop(info) {
+  function windowsStop(info, { resumeTask = true } = {}) {
     return [
       `$profilePath = ${ps(info.profilePath)}`,
       `$stateDir = ${ps(info.stateDir)}`,
@@ -129,6 +135,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       `function Get-TunnelWorkers { @(Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%--profile%'" | Where-Object { $_.CommandLine -match $workerPattern }) }`,
       `$task = Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue`,
       `$taskEnabled = $task -and $task.Settings.Enabled`,
+      `$resumeTask = $false`,
       `if ($taskEnabled) { Disable-ScheduledTask -TaskName $job | Out-Null }`,
       `try {`,
       `if (Test-Path -LiteralPath $stateDir) {`,
@@ -154,7 +161,18 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       `$stopped = @{ status = 'stopped'; url = ''; error = $null; updatedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress`,
       `[IO.File]::WriteAllText((Join-Path $stateDir 'status.json'), $stopped)`,
       `}`,
-      `} finally { if ($taskEnabled) { Enable-ScheduledTask -TaskName $job | Out-Null } }`,
+      ...(resumeTask ? [
+        // Upgrade the launcher guard as well: old runtime snapshots do not yet
+        // understand paused.json. Preserve their original runtime command.
+        `if ($taskEnabled) {`,
+        `$launcherPath = ${ps(info.definition)}`,
+        `if (!(Test-Path -LiteralPath $launcherPath)) { throw 'The boot launcher is missing. Turn startup off and reinstall it.' }`,
+        `$launcher = [IO.File]::ReadAllText($launcherPath)`,
+        `if (!$launcher.StartsWith('# PrivateTunnel boot pause guard v1')) { [IO.File]::WriteAllText($launcherPath, ${ps('\ufeff' + windowsPauseGuard(info))} + $launcher) }`,
+        `$resumeTask = $true`,
+        `}`,
+      ] : []),
+      `} finally { if ($resumeTask) { Enable-ScheduledTask -TaskName $job | Out-Null } }`,
     ];
   }
 
@@ -175,7 +193,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
           `$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))`,
           `foreach ($rule in @(@('S-1-5-18','FullControl'),@('S-1-5-32-544','FullControl'),@('S-1-5-19','ReadAndExecute'),@($ownerSid,'ReadAndExecute'))) { $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($rule[0])), $rule[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }`,
           `Set-Acl -LiteralPath $dir -AclObject $acl`,
-          ...windowsStop(info),
+          ...windowsStop(info, { resumeTask: false }),
           `Copy-Item -LiteralPath ${ps(stagedSource)} -Destination ${ps(info.runner)} -Force`,
           ...(!bundledBinary && !electronNode ? [`Copy-Item -LiteralPath ${ps(runtime)} -Destination ${ps(info.executable)} -Force`] : []),
           ...(electronNode ? [
@@ -201,7 +219,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
           `Register-ScheduledTask -TaskName $job -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'PrivateTunnel: starts at boot before sign-in' -Force | Out-Null`,
           `Start-ScheduledTask -TaskName $job`);
       } else if (action === 'remove') {
-        content.push(...windowsStop(info),
+        content.push(...windowsStop(info, { resumeTask: false }),
           `Unregister-ScheduledTask -TaskName $job -Confirm:$false -ErrorAction SilentlyContinue`,
           `if (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue) { throw 'The startup task could not be removed. Service files were preserved.' }`,
           ...[info.profilePath, info.definition].map((file) => `if (Test-Path -LiteralPath ${ps(file)}) { Remove-Item -LiteralPath ${ps(file)} -Force }`),
