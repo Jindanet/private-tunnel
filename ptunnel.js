@@ -132,7 +132,7 @@ var require_ui = __commonJS({
 var require_startup = __commonJS({
   "client/startup.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs"), os = require("node:os"), path = require("node:path"), crypto = require("node:crypto"), { spawn } = require("node:child_process"), { requireSecureServerWebSocketUrl } = require_server_url(), WINDOWS_POWERSHELL_INIT = "$env:PSModulePath = Join-Path $PSHOME 'Modules'; ", sh = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'", ps = (value) => "'" + String(value).replace(/'/g, "''") + "'", xml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]), unit = (value) => '"' + String(value).replace(/%/g, "%%").replace(/\$/g, "$$").replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    var fs = require("node:fs"), os = require("node:os"), path = require("node:path"), crypto = require("node:crypto"), { spawn } = require("node:child_process"), { requireSecureServerWebSocketUrl } = require_server_url(), WINDOWS_POWERSHELL_INIT = "$env:PSModulePath = $PSHOME + '\\Modules'; ", sh = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'", ps = (value) => "'" + String(value).replace(/'/g, "''") + "'", xml = (value) => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]), unit = (value) => '"' + String(value).replace(/%/g, "%%").replace(/\$/g, "$$").replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
     function writePrivate(filename, data) {
       fs.mkdirSync(path.dirname(filename), { recursive: !0, mode: 448 });
       let temporary = `${filename}.${crypto.randomUUID()}.tmp`;
