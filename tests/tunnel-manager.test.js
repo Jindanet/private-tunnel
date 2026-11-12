@@ -899,8 +899,8 @@ test('normal HTTP and TCP body chunks retain their bytes and accounting', () => 
   assert.equal(destination.destroyed, true);
 });
 
-test('TCP listeners cap accepted connections and terminate idle sockets after five minutes', async () => {
-  const { manager, servers } = fixture();
+test('TCP listeners cap accepted connections and honor an explicitly configured idle limit', async () => {
+  const { manager, servers } = fixture({ runtimeConfig: { tcpIdleTimeoutMs: 300000 } });
   const ws = socket();
   manager.handleNewClient(ws, '127.0.0.1');
   ws.control({ type: MSG.TUNNEL_OPEN, tunnelType: 'tcp' });
