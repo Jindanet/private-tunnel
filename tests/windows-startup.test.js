@@ -11,12 +11,12 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { once } = require('node:events');
 const { WebSocketServer } = require('ws');
-const { createStartupManager } = require('../client/startup');
+const { createStartupManager, WINDOWS_POWERSHELL_INIT } = require('../client/startup');
 const { MSG } = require('../shared/protocol');
 const execute = promisify(execFile);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve,ms));
 const ps = (value) => "'" + String(value).replaceAll("'","''") + "'";
-const powershell = (command) => execute('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],{windowsHide:true,timeout:45000});
+const powershell = (command) => execute('powershell.exe',['-NoProfile','-NonInteractive','-Command',WINDOWS_POWERSHELL_INIT+command],{windowsHide:true,timeout:45000});
 async function waitFor(predicate) {
   const end=Date.now()+25000;
   while(!predicate()){if(Date.now()>end)throw new Error('Windows worker state timed out');await delay(100);}

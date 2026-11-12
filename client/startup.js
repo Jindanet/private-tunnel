@@ -8,6 +8,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { requireSecureServerWebSocketUrl } = require('./server-url');
+// A CLI launched from PowerShell 7 can inherit its incompatible module path.
+// These helpers deliberately use Windows PowerShell's own built-in modules.
+const WINDOWS_POWERSHELL_INIT = "$env:PSModulePath = Join-Path $PSHOME 'Modules'; ";
 
 const sh = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
 const ps = (value) => "'" + String(value).replace(/'/g, "''") + "'";
@@ -113,7 +116,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       const prefix = env.PREFIX || '/data/data/com.termux/files/usr';
       return `#!${prefix}/bin/sh\n# PrivateTunnel boot job\ncommand -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock\nnohup ${command.map(sh).join(' ')} >/dev/null 2>&1 &\n`;
     }
-    if (platform === 'win32') return `${electronNode ? "$env:ELECTRON_RUN_AS_NODE = '1'\r\n" : ''}& ${ps(info.executable)} @(${info.args.map(ps).join(', ')})\r\nexit $LASTEXITCODE\r\n`;
+    if (platform === 'win32') return `${WINDOWS_POWERSHELL_INIT}\r\n${electronNode ? "$env:ELECTRON_RUN_AS_NODE = '1'\r\n" : ''}& ${ps(info.executable)} @(${info.args.map(ps).join(', ')})\r\nexit $LASTEXITCODE\r\n`;
     if (platform === 'darwin') return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.jindanet.${info.job}</string><key>UserName</key><string>${xml(user.username)}</string><key>ProgramArguments</key><array>${command.map((arg) => `<string>${xml(arg)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>30</integer><key>EnvironmentVariables</key><dict>${electronNode ? '<key>ELECTRON_RUN_AS_NODE</key><string>1</string>' : ''}</dict></dict></plist>\n`;
     return `[Unit]\nDescription=PrivateTunnel boot tunnel\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nUser=${Number(user.uid)}\nGroup=${Number(user.gid)}\nExecStart=${command.map(unit).join(' ')}\n${electronNode ? 'Environment=ELECTRON_RUN_AS_NODE=1\n' : ''}${electronNode && env.APPIMAGE ? 'Environment=APPIMAGE_EXTRACT_AND_RUN=1\n' : ''}Restart=on-failure\nRestartPreventExitStatus=1 2\nRestartSec=15\nTimeoutStopSec=10\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n`;
   }
@@ -212,7 +215,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       } else if (stopping) content.push(...windowsStop(info));
       else content.push(...['stop', 'paused.json', 'status.json'].map((name) => `Remove-Item -LiteralPath ${ps(filePath.join(info.stateDir, name))} -Force -ErrorAction SilentlyContinue`), `Start-ScheduledTask -TaskName $job`);
       content.push(`[IO.File]::WriteAllText(${ps(path.join(stage, 'success'))}, 'ok')`);
-      return `$ErrorActionPreference = 'Stop'\r\ntry {\r\n${content.join('\r\n')}\r\n} catch { [IO.File]::WriteAllText(${ps(path.join(stage, 'error'))}, $_.Exception.Message); exit 1 }\r\n`;
+      return `${WINDOWS_POWERSHELL_INIT}\r\n$ErrorActionPreference = 'Stop'\r\ntry {\r\n${content.join('\r\n')}\r\n} catch { [IO.File]::WriteAllText(${ps(path.join(stage, 'error'))}, $_.Exception.Message); exit 1 }\r\n`;
     }
     const lines = ['#!/bin/sh', 'set -eu'];
     const uid = Number(user.uid), gid = Number(user.gid);
@@ -277,7 +280,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       writePrivate(script, (windows ? '\ufeff' : '') + installer(info, action, stage));
       if (windows) {
         const inner = `-NoProfile -ExecutionPolicy Bypass -File "${script}"`;
-        await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$p = Start-Process -FilePath powershell.exe -ArgumentList ${ps(inner)} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`]);
+        await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${WINDOWS_POWERSHELL_INIT}$p = Start-Process -FilePath powershell.exe -ArgumentList ${ps(inner)} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`]);
       } else if (termux) await run(filePath.join(env.PREFIX || '/data/data/com.termux/files/usr', 'bin/sh'), [script]);
       else if (process.getuid?.() === 0) await run('/bin/sh', [script]);
       else if (platform === 'darwin') await run('/usr/bin/osascript', ['-e', `do shell script ${JSON.stringify('/bin/sh ' + sh(script))} with administrator privileges`]);
@@ -338,4 +341,4 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
   return { enable: serial(enable), control: serial(control), status, describe, definition, installer, manifestPath, provider };
 }
 
-module.exports = { createStartupManager, validateProfile, writePrivate, readJson, execute };
+module.exports = { createStartupManager, validateProfile, writePrivate, readJson, execute, WINDOWS_POWERSHELL_INIT };

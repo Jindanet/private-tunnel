@@ -3,13 +3,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { validateProfile, writePrivate, readJson } = require('./startup');
+const { validateProfile, writePrivate, readJson, WINDOWS_POWERSHELL_INIT } = require('./startup');
 const TunnelClient = require('./tunnel-client');
 const { version } = require('../package.json');
 
 function windowsBootId() {
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    "[Console]::Write((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'))"],
+    WINDOWS_POWERSHELL_INIT + "[Console]::Write((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'))"],
   { encoding: 'utf8', windowsHide: true, timeout: 10000, maxBuffer: 4096 });
   if (result.error || result.status !== 0 || !result.stdout.trim()) throw new Error('Cannot verify Windows boot identity. Try starting the boot service again.');
   return result.stdout.trim();
@@ -24,7 +24,7 @@ function sameWorker(pid, profilePath) {
   }
   const command = process.platform === 'win32' ? 'powershell.exe' : '/bin/ps';
   const args = process.platform === 'win32'
-    ? ['-NoProfile', '-NonInteractive', '-Command', `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if($p){[Console]::Write($p.CommandLine)}`]
+    ? ['-NoProfile', '-NonInteractive', '-Command', `${WINDOWS_POWERSHELL_INIT}$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if($p){[Console]::Write($p.CommandLine)}`]
     : ['-p', String(pid), '-o', 'command='];
   const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 5000, maxBuffer: 65536 });
   if (result.error || result.status !== 0) throw new Error('Cannot verify the previous startup worker. Inspect runner.lock before restarting.');
