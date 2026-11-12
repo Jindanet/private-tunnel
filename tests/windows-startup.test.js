@@ -25,6 +25,10 @@ async function waitFor(predicate) {
 test('Windows startup stop kills orphan workers, rejects retries and recovers partial uninstall',{
   skip:process.platform!=='win32'||process.env.CI!=='true',timeout:150000,
 },async(t)=>{
+  let phase='setup';
+  const watchdog=setTimeout(()=>{
+    process.stderr.write(`WINDOWS_STARTUP_TIMEOUT phase=${phase}\n`,()=>process.exit(1));
+  },110000);
   const directory=path.join(process.env.ProgramData,'PrivateTunnel-ci-'+crypto.randomUUID());
   fs.mkdirSync(directory);
   const gateway=new WebSocketServer({host:'127.0.0.1',port:0});await once(gateway,'listening');
@@ -43,6 +47,7 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
       await execute('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script],{windowsHide:true,timeout:45000});
     }});
   t.after(async()=>{
+    phase='cleanup';
     for(const child of [orphan,foreign])if(child&&child.exitCode===null&&child.signalCode===null){const done=once(child,'exit');child.kill();await done;}
     if(info)await powershell(`Stop-ScheduledTask -TaskName ${ps(info.job)} -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName ${ps(info.job)} -Confirm:$false -ErrorAction SilentlyContinue`);
     for(const socket of gateway.clients)socket.terminate();await new Promise((resolve)=>gateway.close(resolve));
@@ -50,10 +55,13 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
     assert.equal(path.dirname(resolved),path.resolve(process.env.ProgramData));
     assert.ok(path.basename(resolved).startsWith('PrivateTunnel-ci-'));
     fs.rmSync(resolved,{recursive:true,force:true});
+    clearTimeout(watchdog);
   });
+  phase='install';
   info=await boot.enable({serverUrl:`ws://127.0.0.1:${gateway.address().port}`,token:'ci-only-key-at-least-thirty-two-characters',clientId:crypto.randomUUID(),tunnelType:'tcp',localPort:9});
   await waitFor(()=>boot.status()[0].status==='online');
   assert.equal(connections,1);
+  phase='stop legacy launcher';
   // Simulate an installed launcher from before this fix. Stop must repair its
   // pause guard without replacing its original executable/arguments.
   const definition=fs.readFileSync(info.definition,'utf8');
@@ -64,13 +72,16 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
   const originalRunner=fs.readFileSync(info.runner);
   const stubbornSource=`const fs=require('node:fs'),path=require('node:path');const profile=JSON.parse(fs.readFileSync(process.argv.at(-1)));fs.writeFileSync(path.join(profile.stateDir,'status.json'),JSON.stringify({status:'online',pid:process.pid,updatedAt:new Date().toISOString()}));setInterval(()=>{},1000);`;
   fs.writeFileSync(info.runner,stubbornSource);
+  phase='simulate task retry';
   await powershell(`Start-ScheduledTask -TaskName ${ps(info.job)}`);
   await delay(6000); // Simulate a queued OS retry without an explicit user Start.
   assert.equal(connections,1,'A retry cannot undo Stop in the same boot');
   assert.equal(boot.status()[0].status,'stopped','Old online heartbeats cannot reappear');
   fs.writeFileSync(info.runner,originalRunner);
+  phase='explicit start';
   await boot.control(info.id,'start');
   await waitFor(()=>connections===2&&boot.status()[0].status==='online');
+  phase='second stop';
   await boot.control(info.id,'stop');
 
   // An old/stuck worker ignores cooperative stop. The exact profile argument
@@ -78,6 +89,7 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
   fs.writeFileSync(info.runner,stubbornSource);
   orphan=spawn(process.execPath,[info.runner,'startup','run','--profile',info.profilePath],{windowsHide:true,stdio:'ignore'});
   await waitFor(()=>JSON.parse(fs.readFileSync(info.statusPath)).pid===orphan.pid);
+  phase='stop orphan';
   const orphanExit=once(orphan,'exit');
   await boot.control(info.id,'stop');await orphanExit;
   assert.equal(boot.status()[0].status,'stopped');
@@ -87,6 +99,7 @@ test('Windows startup stop kills orphan workers, rejects retries and recovers pa
   foreign=spawn(info.executable,['-e','setInterval(()=>{},1000)','--','startup','run','--profile',info.profilePath+'.other'],{windowsHide:true,stdio:'ignore',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}});
   await once(foreign,'spawn');await delay(500);
   fs.unlinkSync(info.profilePath); // Recover the partial state reported in GUI.
+  phase='remove locked runtime';
   const removed=await boot.control(info.id,'remove');
   assert.equal(foreign.exitCode,null);assert.equal(foreign.signalCode,null);
   assert.equal(removed.cleanupPending,true);

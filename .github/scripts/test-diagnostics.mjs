@@ -7,7 +7,7 @@ if (fs.existsSync(file)) {
   const failures = lines.flatMap((line, index) => /^\s*not ok \d+/.test(line) ? [index] : []).slice(0, 20);
   if (!failures.length) failures.push(Math.max(0, lines.length - 60));
   for (const start of failures) {
-    const detail = lines.slice(start, start + 65).join('\n').slice(0, 10000)
+    const detail = lines.slice(Math.max(0,start-6), start + 65).join('\n').slice(0, 10000)
       .replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
     console.log(`::error title=Test failure::${detail}`);
   }
