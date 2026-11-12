@@ -286,6 +286,7 @@ async function main(argv = process.argv.slice(2)) {
         console.log(`${entry.id}  ${entry.tunnelType} ${entry.localHost}:${entry.localPort}  ${entry.installed ? entry.status : 'installation missing'}`);
         if (entry.url) console.log(`Public: ${entry.url}`);
         if (entry.error) console.log(`Error: ${entry.error}`);
+        if (entry.status === 'online') console.log(`Worker version: ${entry.workerVersion || 'unknown (reinstall the boot job)'}; data transport: ${entry.dataTransportVersion || 'unknown'}`);
         console.log(`Provider: ${entry.provider}\nLog: ${entry.logPath}\n${entry.note}`);
       }
       return;

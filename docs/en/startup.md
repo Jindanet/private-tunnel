@@ -34,4 +34,10 @@ Use the ID and paths shown by installation/status to inspect the generated servi
 
 `stop` is temporary: the next boot starts the installed job again. `remove` disables the persistent job and removes its service configuration. Changing the regular CLI profile does not rewrite existing job snapshots; remove/reinstall affected jobs after key rotation, changed targets or runtime updates. Keep Node and Linux/macOS executable paths stable. Windows stages the runtime in its protected service location.
 
+On Windows, Stop sharing and `startup stop` request a graceful shutdown, wait for the actual worker, and terminate a stuck worker only after matching its exact service profile and process creation time. A pause saved for the current Windows boot prevents Task Scheduler retries from restarting a stopped tunnel. Start clears the pause; a new boot also clears it. The GUI suppresses old heartbeat updates while the action is pending. Stop ends active TCP/RDP sessions.
+
+For the older `Access to the path 'PrivateTunnel.exe' is denied` uninstall failure, close the old GUI and open the new release from its extracted application folder. Turn startup off again, approve the administrator prompt, then turn it back on to install the new snapshot. The new remover can recover even when the previous attempt already deleted the service profile. If an unrelated process still locks runtime files, startup is removed and the GUI reports that file cleanup is pending; restart Windows before deleting that old service folder. Do not delete a profile while its tunnel is still running.
+
+New worker logs record their version, WebSocket disconnect causes and TCP close byte counts without payloads or access keys. `startup status` shows the live worker version and negotiated data transport. A worker with no version predates this diagnostic; the newly downloaded GUI's version alone does not identify the installed boot worker.
+
 This is the **client** startup installer. It does not install the public server as a Windows service. Use the separate [server deployment guide](server.md) for server process supervision.
