@@ -40,4 +40,6 @@ For the older `Access to the path 'PrivateTunnel.exe' is denied` uninstall failu
 
 New worker logs record their version, WebSocket disconnect causes and TCP close byte counts without payloads or access keys. `startup status` shows the live worker version and negotiated data transport. A worker with no version predates this diagnostic; the newly downloaded GUI's version alone does not identify the installed boot worker.
 
+CLI status lists the jobs belonging to that CLI configuration. For desktop jobs on Windows, open `%ProgramData%\PrivateTunnel\startup` in File Explorer and find the affected job's `state\service.log` and `state\status.json`. Those files contain the runtime version and connection diagnostics; `profile.json` contains the private access key and should not be included in a bug report.
+
 This is the **client** startup installer. It does not install the public server as a Windows service. Use the separate [server deployment guide](server.md) for server process supervision.

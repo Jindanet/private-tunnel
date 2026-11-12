@@ -4,6 +4,7 @@ Fix Windows boot tunnels remaining online after Stop sharing and recover startup
 
 - Stop requests graceful shutdown, waits for the worker and checks for orphan processes using the exact service-profile argument and process creation time before force stopping a stuck worker.
 - A pause bound to the current Windows boot prevents task retries from undoing Stop. Start or the next boot resumes the installed job.
+- Stop adds a pause guard to legacy launchers while preserving their runtime command. Installation/removal keep the old task disabled throughout file changes. Windows PowerShell helpers use their own built-in module path, including when launched from PowerShell 7.
 - Startup removal handles profiles already deleted by a failed older uninstall. If a separate process locks only runtime binaries, the job and profile are removed, with a visible file-cleanup warning instead of retaining a broken startup entry.
 - GUI polling waits for startup actions and rejects overlapping actions. Stop also cancels pending interactive starts and disconnects any interactive instance belonging to the tunnel.
 - Worker status/logs expose their actual version, negotiated data transport, WebSocket disconnect causes and TCP close byte counts without logging payloads or access keys.
