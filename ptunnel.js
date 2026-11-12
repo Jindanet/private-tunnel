@@ -249,14 +249,27 @@ var require_startup = __commonJS({
           };
         });
       }
+      function windowsPauseGuard(info) {
+        let pause = ps(filePath.join(info.stateDir, "paused.json")), stop = ps(filePath.join(info.stateDir, "stop"));
+        return `# PrivateTunnel boot pause guard v1\r
+${WINDOWS_POWERSHELL_INIT}\r
+$ErrorActionPreference = 'Stop'\r
+if (Test-Path -LiteralPath ${pause}) {\r
+$pause = Get-Content -LiteralPath ${pause} -Raw | ConvertFrom-Json\r
+$bootId = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')\r
+if ($pause.bootId -eq $bootId) { exit 0 }\r
+Remove-Item -LiteralPath ${pause} -Force\r
+Remove-Item -LiteralPath ${stop} -Force -ErrorAction SilentlyContinue\r
+}\r
+`;
+      }
       function definition(info) {
         let command = [info.executable, ...info.args];
         return termux ? `#!${env.PREFIX || "/data/data/com.termux/files/usr"}/bin/sh
 # PrivateTunnel boot job
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 nohup ${command.map(sh).join(" ")} >/dev/null 2>&1 &
-` : platform === "win32" ? `${WINDOWS_POWERSHELL_INIT}\r
-${electronNode ? `$env:ELECTRON_RUN_AS_NODE = '1'\r
+` : platform === "win32" ? `${windowsPauseGuard(info)}${electronNode ? `$env:ELECTRON_RUN_AS_NODE = '1'\r
 ` : ""}& ${ps(info.executable)} @(${info.args.map(ps).join(", ")})\r
 exit $LASTEXITCODE\r
 ` : platform === "darwin" ? `<?xml version="1.0" encoding="UTF-8"?>
@@ -287,7 +300,7 @@ PrivateTmp=true
 WantedBy=multi-user.target
 `;
       }
-      function windowsStop(info) {
+      function windowsStop(info, { resumeTask = !0 } = {}) {
         return [
           `$profilePath = ${ps(info.profilePath)}`,
           `$stateDir = ${ps(info.stateDir)}`,
@@ -295,6 +308,7 @@ WantedBy=multi-user.target
           `function Get-TunnelWorkers { @(Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%--profile%'" | Where-Object { $_.CommandLine -match $workerPattern }) }`,
           "$task = Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue",
           "$taskEnabled = $task -and $task.Settings.Enabled",
+          "$resumeTask = $false",
           "if ($taskEnabled) { Disable-ScheduledTask -TaskName $job | Out-Null }",
           "try {",
           "if (Test-Path -LiteralPath $stateDir) {",
@@ -320,7 +334,18 @@ WantedBy=multi-user.target
           "$stopped = @{ status = 'stopped'; url = ''; error = $null; updatedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress",
           "[IO.File]::WriteAllText((Join-Path $stateDir 'status.json'), $stopped)",
           "}",
-          "} finally { if ($taskEnabled) { Enable-ScheduledTask -TaskName $job | Out-Null } }"
+          ...resumeTask ? [
+            // Upgrade the launcher guard as well: old runtime snapshots do not yet
+            // understand paused.json. Preserve their original runtime command.
+            "if ($taskEnabled) {",
+            `$launcherPath = ${ps(info.definition)}`,
+            "if (!(Test-Path -LiteralPath $launcherPath)) { throw 'The boot launcher is missing. Turn startup off and reinstall it.' }",
+            "$launcher = [IO.File]::ReadAllText($launcherPath)",
+            `if (!$launcher.StartsWith('# PrivateTunnel boot pause guard v1')) { [IO.File]::WriteAllText($launcherPath, ${ps("\uFEFF" + windowsPauseGuard(info))} + $launcher) }`,
+            "$resumeTask = $true",
+            "}"
+          ] : [],
+          "} finally { if ($resumeTask) { Enable-ScheduledTask -TaskName $job | Out-Null } }"
         ];
       }
       function installer(info, action, stage) {
@@ -340,7 +365,7 @@ WantedBy=multi-user.target
             "$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))",
             "foreach ($rule in @(@('S-1-5-18','FullControl'),@('S-1-5-32-544','FullControl'),@('S-1-5-19','ReadAndExecute'),@($ownerSid,'ReadAndExecute'))) { $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($rule[0])), $rule[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
             "Set-Acl -LiteralPath $dir -AclObject $acl",
-            ...windowsStop(info),
+            ...windowsStop(info, { resumeTask: !1 }),
             `Copy-Item -LiteralPath ${ps(stagedSource)} -Destination ${ps(info.runner)} -Force`,
             ...!bundledBinary && !electronNode ? [`Copy-Item -LiteralPath ${ps(runtime)} -Destination ${ps(info.executable)} -Force`] : [],
             ...electronNode ? [
@@ -366,7 +391,7 @@ WantedBy=multi-user.target
             "Register-ScheduledTask -TaskName $job -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'PrivateTunnel: starts at boot before sign-in' -Force | Out-Null",
             "Start-ScheduledTask -TaskName $job"
           ) : action === "remove" ? (content.push(
-            ...windowsStop(info),
+            ...windowsStop(info, { resumeTask: !1 }),
             "Unregister-ScheduledTask -TaskName $job -Confirm:$false -ErrorAction SilentlyContinue",
             "if (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue) { throw 'The startup task could not be removed. Service files were preserved.' }",
             ...[info.profilePath, info.definition].map((file) => `if (Test-Path -LiteralPath ${ps(file)}) { Remove-Item -LiteralPath ${ps(file)} -Force }`),
