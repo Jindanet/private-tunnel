@@ -126,7 +126,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends xvfb xauth libnss3 libatk-bridge2.0-0t64 libgtk-3-0t64 libgbm1 libasound2t64 libcups2t64 libxss1 libxkbcommon0 fonts-noto-core
       - run: npm ci
-      - run: npm run check:termux
+      - name: Check committed standalone client
+        id: bundle-check
+        continue-on-error: true
+        run: npm run check:termux
+      - run: npm run build:termux
       - name: Run tests with a virtual display
         if: runner.os == 'Linux'
         env:
@@ -147,4 +151,7 @@ jobs:
       - name: Annotate failed tests
         if: failure()
         run: node .github/scripts/test-diagnostics.mjs
+      - name: Require a synchronized standalone client
+        if: always() && steps.bundle-check.outcome == 'failure'
+        run: exit 1
       - run: npm audit --omit=dev --audit-level=high
