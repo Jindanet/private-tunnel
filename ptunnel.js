@@ -242,6 +242,8 @@ var require_startup = __commonJS({
             url: fresh ? String(state.url || "") : "",
             error: error || state?.error || null,
             installed: fs.existsSync(info.profilePath),
+            workerVersion: state?.version || null,
+            dataTransportVersion: state?.dataTransportVersion || null,
             lastStatus: state?.status || null,
             updatedAt: state?.updatedAt || null
           };
@@ -284,6 +286,42 @@ PrivateTmp=true
 WantedBy=multi-user.target
 `;
       }
+      function windowsStop(info) {
+        return [
+          `$profilePath = ${ps(info.profilePath)}`,
+          `$stateDir = ${ps(info.stateDir)}`,
+          `$workerPattern = '(?i)(?:^|\\s)startup\\s+run\\s+--profile\\s+(?:"' + [Regex]::Escape($profilePath) + '"|' + [Regex]::Escape($profilePath) + ')(?:\\s|$)'`,
+          `function Get-TunnelWorkers { @(Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%--profile%'" | Where-Object { $_.CommandLine -match $workerPattern }) }`,
+          "$task = Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue",
+          "$taskEnabled = $task -and $task.Settings.Enabled",
+          "if ($taskEnabled) { Disable-ScheduledTask -TaskName $job | Out-Null }",
+          "try {",
+          "if (Test-Path -LiteralPath $stateDir) {",
+          "$bootId = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')",
+          "$pause = @{ bootId = $bootId } | ConvertTo-Json -Compress",
+          "[IO.File]::WriteAllText((Join-Path $stateDir 'paused.json'), $pause)",
+          "[IO.File]::WriteAllText((Join-Path $stateDir 'stop'), '')",
+          "}",
+          // Allow the worker to close its WebSocket and TCP streams voluntarily.
+          // Stopping only the PowerShell task can leave its Node child alive.
+          "$deadline = [DateTime]::UtcNow.AddSeconds(6)",
+          "while (@(Get-TunnelWorkers).Count -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }",
+          "if ($task) { Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue }",
+          "foreach ($worker in @(Get-TunnelWorkers)) {",
+          "$workerProcess = Get-Process -Id $worker.ProcessId -ErrorAction SilentlyContinue",
+          // Creation time plus the exact profile argument protects against PID reuse.
+          "if ($workerProcess -and [Math]::Abs(($workerProcess.StartTime.ToUniversalTime() - $worker.CreationDate.ToUniversalTime()).TotalMilliseconds) -lt 1) { Stop-Process -InputObject $workerProcess -Force -ErrorAction SilentlyContinue }",
+          "}",
+          "$deadline = [DateTime]::UtcNow.AddSeconds(5)",
+          "while ((@(Get-TunnelWorkers).Count -or (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }",
+          "if (@(Get-TunnelWorkers).Count -or (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running') { throw 'The boot tunnel is still running. Stop was not confirmed.' }",
+          "if (Test-Path -LiteralPath $stateDir) {",
+          "$stopped = @{ status = 'stopped'; url = ''; error = $null; updatedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress",
+          "[IO.File]::WriteAllText((Join-Path $stateDir 'status.json'), $stopped)",
+          "}",
+          "} finally { if ($taskEnabled) { Enable-ScheduledTask -TaskName $job | Out-Null } }"
+        ];
+      }
       function installer(info, action, stage) {
         let installing = action === "install", stopping = action === "stop" || action === "remove", stagedSource = bundledBinary ? source : path.join(stage, "runner");
         if (platform === "win32" && !termux) {
@@ -301,8 +339,7 @@ WantedBy=multi-user.target
             "$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))",
             "foreach ($rule in @(@('S-1-5-18','FullControl'),@('S-1-5-32-544','FullControl'),@('S-1-5-19','ReadAndExecute'),@($ownerSid,'ReadAndExecute'))) { $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($rule[0])), $rule[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
             "Set-Acl -LiteralPath $dir -AclObject $acl",
-            "Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue",
-            "for ($wait = 0; $wait -lt 50 -and (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running'; $wait++) { Start-Sleep -Milliseconds 200 }",
+            ...windowsStop(info),
             `Copy-Item -LiteralPath ${ps(stagedSource)} -Destination ${ps(info.runner)} -Force`,
             ...!bundledBinary && !electronNode ? [`Copy-Item -LiteralPath ${ps(runtime)} -Destination ${ps(info.executable)} -Force`] : [],
             ...electronNode ? [
@@ -317,6 +354,7 @@ WantedBy=multi-user.target
             `$stateAcl = Get-Acl -LiteralPath ${ps(info.stateDir)}`,
             "$stateAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier('S-1-5-19')), 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))",
             `Set-Acl -LiteralPath ${ps(info.stateDir)} -AclObject $stateAcl`,
+            ...["stop", "paused.json", "status.json"].map((name) => `Remove-Item -LiteralPath ${ps(filePath.join(info.stateDir, name))} -Force -ErrorAction SilentlyContinue`),
             `$ownedFiles = @(${[info.runner, info.profilePath, info.definition, ...!bundledBinary && !electronNode ? [info.executable] : []].map(ps).join(", ")})`,
             ...electronNode ? [`$ownedFiles += @(${ps(info.runtimeDir)}); $ownedFiles += @(Get-ChildItem -LiteralPath ${ps(info.runtimeDir)} -Recurse -Force | ForEach-Object { $_.FullName })`] : [],
             "foreach ($ownedFile in $ownedFiles) { $fileAcl = Get-Acl -LiteralPath $ownedFile; $fileAcl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544'))); Set-Acl -LiteralPath $ownedFile -AclObject $fileAcl }",
@@ -327,16 +365,17 @@ WantedBy=multi-user.target
             "Register-ScheduledTask -TaskName $job -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'PrivateTunnel: starts at boot before sign-in' -Force | Out-Null",
             "Start-ScheduledTask -TaskName $job"
           ) : action === "remove" ? (content.push(
-            "Stop-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue",
-            "for ($wait = 0; $wait -lt 50 -and (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue).State -eq 'Running'; $wait++) { Start-Sleep -Milliseconds 200 }",
+            ...windowsStop(info),
             "Unregister-ScheduledTask -TaskName $job -Confirm:$false -ErrorAction SilentlyContinue",
-            ...[info.profilePath, info.runner, info.definition, ...!bundledBinary && !electronNode ? [info.executable] : []].map((file) => `Remove-Item -LiteralPath ${ps(file)} -Force -ErrorAction SilentlyContinue`)
+            "if (Get-ScheduledTask -TaskName $job -ErrorAction SilentlyContinue) { throw 'The startup task could not be removed. Service files were preserved.' }",
+            ...[info.profilePath, info.definition].map((file) => `if (Test-Path -LiteralPath ${ps(file)}) { Remove-Item -LiteralPath ${ps(file)} -Force }`),
+            ...[info.runner, ...!bundledBinary && !electronNode ? [info.executable] : []].map((file) => `if (Test-Path -LiteralPath ${ps(file)}) { try { Remove-Item -LiteralPath ${ps(file)} -Force } catch { [IO.File]::WriteAllText(${ps(path.join(stage, "cleanup-pending"))}, 'runtime') } }`)
           ), electronNode && content.push(
             `$runtimeRoot = [IO.Path]::GetFullPath(${ps(info.runtimeDir)})`,
             "$serviceRoot = [IO.Path]::GetFullPath($dir) + [IO.Path]::DirectorySeparatorChar",
             "if (!$runtimeRoot.StartsWith($serviceRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime cleanup must stay inside its service directory.' }",
-            "if (Test-Path -LiteralPath $runtimeRoot) { if ((Get-Item -LiteralPath $runtimeRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime cleanup cannot follow a link.' }; Remove-Item -LiteralPath $runtimeRoot -Recurse -Force }"
-          )) : content.push(`${stopping ? "Stop" : "Start"}-ScheduledTask -TaskName $job`), content.push(`[IO.File]::WriteAllText(${ps(path.join(stage, "success"))}, 'ok')`), `$ErrorActionPreference = 'Stop'\r
+            `if (Test-Path -LiteralPath $runtimeRoot) { if ((Get-Item -LiteralPath $runtimeRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Runtime cleanup cannot follow a link.' }; try { Remove-Item -LiteralPath $runtimeRoot -Recurse -Force } catch { [IO.File]::WriteAllText(${ps(path.join(stage, "cleanup-pending"))}, 'runtime') } }`
+          )) : stopping ? content.push(...windowsStop(info)) : content.push(...["stop", "paused.json", "status.json"].map((name) => `Remove-Item -LiteralPath ${ps(filePath.join(info.stateDir, name))} -Force -ErrorAction SilentlyContinue`), "Start-ScheduledTask -TaskName $job"), content.push(`[IO.File]::WriteAllText(${ps(path.join(stage, "success"))}, 'ok')`), `$ErrorActionPreference = 'Stop'\r
 try {\r
 ${content.join(`\r
 `)}\r
@@ -395,11 +434,12 @@ ${content.join(`\r
             await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$p = Start-Process -FilePath powershell.exe -ArgumentList ${ps(inner)} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`]);
           } else termux ? await run(filePath.join(env.PREFIX || "/data/data/com.termux/files/usr", "bin/sh"), [script]) : process.getuid?.() === 0 ? await run("/bin/sh", [script]) : platform === "darwin" ? await run("/usr/bin/osascript", ["-e", `do shell script ${JSON.stringify("/bin/sh " + sh(script))} with administrator privileges`]) : await run(gui ? "pkexec" : "sudo", ["/bin/sh", script], { interactive: !gui });
           if (!fs.existsSync(path.join(stage, "success"))) throw new Error("Startup installation was not confirmed. No startup entry was saved.");
+          return { cleanupPending: fs.existsSync(path.join(stage, "cleanup-pending")) };
         } catch (error) {
           let detailPath = path.join(stage, "error"), detail = fs.existsSync(detailPath) ? fs.readFileSync(detailPath, "utf8") : error.message;
           throw new Error(`Startup ${action} failed: ${detail}`);
         } finally {
-          for (let name of ["profile.json", "runner", "definition", windows ? "install.ps1" : "install.sh", "success", "error"])
+          for (let name of ["profile.json", "runner", "definition", windows ? "install.ps1" : "install.sh", "success", "error", "cleanup-pending"])
             try {
               fs.unlinkSync(path.join(stage, name));
             } catch (error) {
@@ -424,7 +464,8 @@ ${content.join(`\r
         if (!["start", "stop", "remove"].includes(action)) throw new Error("Invalid startup action.");
         let manifest = load();
         if (!manifest.entries.find((item) => item.id === id)) throw new Error("Startup tunnel not found. Run startup status to list IDs.");
-        return await apply(describe(id), action), action === "remove" && (manifest.entries = manifest.entries.filter((item) => item.id !== id), writePrivate(manifestPath, JSON.stringify(manifest, null, 2))), !0;
+        let result = await apply(describe(id), action);
+        return action === "remove" && (manifest.entries = manifest.entries.filter((item) => item.id !== id), writePrivate(manifestPath, JSON.stringify(manifest, null, 2))), { ok: !0, ...result };
       }
       let mutations = Promise.resolve(), serial = (operation) => (...args) => {
         let result = mutations.then(() => operation(...args));
@@ -442,7 +483,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "privatetunnel",
-      version: "1.4.2",
+      version: "1.4.3",
       description: "ngrok-like tunnel system - expose local servers to the internet",
       author: "Jindanet",
       license: "MIT",
@@ -2905,8 +2946,9 @@ var require_tunnel_v4 = __commonJS({
     function getTransportVersion(ws) {
       return current(ws) ? DATA_TRANSPORT_VERSION : base.PROTOCOL_VERSION;
     }
-    function fail(state) {
+    function fail(state, reason = "Invalid v4 transport") {
       if (state.closed) return !1;
+      state.ws.tunnelFailure = reason;
       try {
         state.ws.terminate();
       } catch {
@@ -2920,13 +2962,13 @@ var require_tunnel_v4 = __commonJS({
     function rawSend(state, payload) {
       if (!open(state))
         return disposeState(state), !1;
-      if ((state.ws.bufferedAmount || 0) + Buffer.byteLength(payload) > WS_HARD_LIMIT) return fail(state);
+      if ((state.ws.bufferedAmount || 0) + Buffer.byteLength(payload) > WS_HARD_LIMIT) return fail(state, "v4 WebSocket buffer limit exceeded");
       try {
         return state.ws.send(payload, { compress: !1 }, (error) => {
-          error && fail(state);
+          error && fail(state, "v4 WebSocket write failed");
         }), !state.closed;
       } catch {
-        return fail(state);
+        return fail(state, "v4 WebSocket write failed");
       }
     }
     function findRecord(state, id) {
@@ -2979,7 +3021,7 @@ var require_tunnel_v4 = __commonJS({
     function queueControl(state, payload, record = null, kind = "control", afterData = !1) {
       let bytes = Buffer.byteLength(payload);
       if (!open(state)) return !1;
-      if (bytes > MAX_CONTROL_QUEUE_BYTES || state.controlQueuedBytes + bytes > MAX_CONTROL_QUEUE_BYTES) return fail(state);
+      if (bytes > MAX_CONTROL_QUEUE_BYTES || state.controlQueuedBytes + bytes > MAX_CONTROL_QUEUE_BYTES) return fail(state, "v4 control queue limit exceeded");
       let entry = { payload, bytes, record, kind, afterData };
       return record && record.controlPending++, !state.controls.length && controlReady(entry) && (state.ws.bufferedAmount || 0) < WS_HIGH_WATER ? rawSend(state, payload) ? (sentControl(state, entry), !0) : !1 : (state.controls.push(entry), state.controlQueuedBytes += bytes, schedule(state), syncSources(state), !0);
     }
@@ -3148,17 +3190,17 @@ var require_tunnel_v4 = __commonJS({
       let type = data[0], id = base.bytesToUuid(data.subarray(1, 17)), record = findRecord(state, id);
       if (type === CREDIT) {
         if (data.length !== 21 || !record)
-          return fail(state), null;
+          return fail(state, "Invalid v4 credit record"), null;
         let bytes2 = data.readUInt32BE(17);
         if (!bytes2 || bytes2 > record.sentOutstanding || bytes2 > state.sentOutstandingBytes)
-          return fail(state), null;
+          return fail(state, "Invalid v4 credit amount"), null;
         record.sentOutstanding -= bytes2, state.sentOutstandingBytes -= bytes2;
         for (let candidate of state.records.values()) ready(state, candidate);
         return syncSources(state), retire(state, record), schedule(state), null;
       }
       let frameType = type - 64, bytes = data.length - 17, credit = bytes + FRAME_CREDIT_OVERHEAD;
       if (type < 65 || type > 67 || !record || !bytes || bytes > MAX_FRAME_BYTES || frameType !== expectedType(state, record, !1) || !record.reset && record.remoteEnded || credit > WINDOW - record.receivedOutstanding || credit > CONNECTION_WINDOW - state.receivedOutstandingBytes)
-        return fail(state), null;
+        return fail(state, "Invalid v4 data frame or receive window exceeded"), null;
       record.receivedOutstanding += credit, state.receivedOutstandingBytes += credit, state.receivedPayloadBytes += bytes;
       let token = { state, record, credit, done: !1, sink: null };
       if (record.tokens.add(token), record.reset)
@@ -3357,6 +3399,7 @@ var require_tunnel_client = __commonJS({
         }), this.onDisconnected = options.onDisconnected || (() => {
         }), this.onRequest = options.onRequest || (() => {
         }), this.onError = options.onError || (() => {
+        }), this.onDiagnostic = options.onDiagnostic || (() => {
         }), this.requestStreams = /* @__PURE__ */ new Map(), this.tcpSockets = /* @__PURE__ */ new Map();
       }
       connect() {
@@ -3401,7 +3444,10 @@ var require_tunnel_client = __commonJS({
               this.shouldReconnect = !1, this.onError(Object.assign(new Error("Unauthorized: invalid or missing token"), { code: "EUNAUTHORIZED" }));
               return;
             }
-            this.shouldReconnect && (this.onDisconnected(), this._reconnect());
+            if (this.shouldReconnect) {
+              let message = ws.tunnelFailure || `Tunnel WebSocket closed (code ${code}); active TCP sessions were closed.`;
+              this.onDiagnostic(message), this.onDisconnected({ code, message }), this._reconnect();
+            }
           }
         }), this.ws.on("error", (err) => {
           this.ws === ws && (err.message && /Unexpected server response: 401/.test(err.message) && (this.shouldReconnect = !1, err.code = "EUNAUTHORIZED"), this.onError(err));
@@ -3471,16 +3517,17 @@ var require_tunnel_client = __commonJS({
       }
       _handleTcpConnect(connId) {
         if (typeof connId != "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(connId) || this.tcpSockets.has(connId) || this.tcpSockets.size >= 128) return;
-        let modern = getTransportVersion(this.ws) === DATA_TRANSPORT_VERSION, sock = net.createConnection({ host: this.localHost, port: this.localPort, allowHalfOpen: modern });
+        let modern = getTransportVersion(this.ws) === DATA_TRANSPORT_VERSION, sock = net.createConnection({ host: this.localHost, port: this.localPort, allowHalfOpen: modern }), socketError = null;
         sock.setNoDelay(!0), sock.setKeepAlive(!0, 3e4), this.tcpSockets.set(connId, sock), this.onRequest({ method: "TCP", path: `→ localhost:${this.localPort}`, statusCode: 0, latency: 0 }), sock.on("data", (chunk) => {
           this.ws && this.ws.readyState === this.ws.OPEN && (sendData(this.ws, FRAME_TCP_DATA, connId, chunk, sock) || sock.destroy());
         }), sock.on("end", () => {
           modern && sendControl(this.ws, { type: TCP_END, connId });
         }), sock.on("close", (hadError) => {
-          this.tcpSockets.delete(connId), !sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished) && this.ws && this.ws.readyState === this.ws.OPEN && sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
+          this.tcpSockets.delete(connId), this.onDiagnostic(`TCP ${connId} closed: ${socketError || (sock._tunnelRemoteReset ? "remote reset" : hadError ? "socket error" : "socket closed")}; read=${sock.bytesRead || 0} written=${sock.bytesWritten || 0} eof=${!!sock.readableEnded} finished=${!!sock.writableFinished}`), !sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished) && this.ws && this.ws.readyState === this.ws.OPEN && sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
         }), sock.on("connect", () => {
           this.onRequest({ method: "TCP", path: `connected → localhost:${this.localPort}`, statusCode: 200, latency: 0 });
-        }), sock.on("error", () => {
+        }), sock.on("error", (error) => {
+          socketError = error.code || "socket error";
         });
       }
       _handleTcpClose(connId) {
@@ -3580,7 +3627,7 @@ var require_tunnel_client = __commonJS({
           return;
         }
         clearTimeout(this.serverSilenceTimer), this.serverSilenceTimer = setTimeout(() => {
-          this.serverSilenceTimer = null, this.ws === ws && ws.readyState === ws.OPEN && this.shouldReconnect && ws.terminate();
+          this.serverSilenceTimer = null, this.ws === ws && ws.readyState === ws.OPEN && this.shouldReconnect && (ws.tunnelFailure = "No server messages for 90 seconds; reconnecting.", ws.terminate());
         }, 9e4), this.serverSilenceTimer.unref?.();
       }
       _reconnect() {
@@ -3605,7 +3652,21 @@ var require_tunnel_client = __commonJS({
 var require_startup_runner = __commonJS({
   "client/startup-runner.js"(exports2, module2) {
     "use strict";
-    var fs = require("node:fs"), path = require("node:path"), { spawnSync } = require("node:child_process"), { validateProfile, writePrivate, readJson } = require_startup(), TunnelClient = require_tunnel_client();
+    var fs = require("node:fs"), path = require("node:path"), { spawnSync } = require("node:child_process"), { validateProfile, writePrivate, readJson } = require_startup(), TunnelClient = require_tunnel_client(), { version } = require_package();
+    function windowsBootId() {
+      let result = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "[Console]::Write((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'))"
+        ],
+        { encoding: "utf8", windowsHide: !0, timeout: 1e4, maxBuffer: 4096 }
+      );
+      if (result.error || result.status !== 0 || !result.stdout.trim()) throw new Error("Cannot verify Windows boot identity. Try starting the boot service again.");
+      return result.stdout.trim();
+    }
     function sameWorker(pid, profilePath) {
       if (!Number.isInteger(pid) || pid <= 0 || pid > 2147483647) return !1;
       try {
@@ -3625,12 +3686,23 @@ var require_startup_runner = __commonJS({
       if (result.error || result.status !== 0) throw new Error("Cannot verify the previous startup worker. Inspect runner.lock before restarting.");
       return process.platform === "win32" ? result.stdout.toLowerCase().includes(profilePath.toLowerCase()) : result.stdout.includes(profilePath);
     }
-    function runStartup(profilePath, { Client = TunnelClient, intervalMs = 3e3 } = {}) {
+    function runStartup(profilePath, { Client = TunnelClient, intervalMs = 3e3, bootId = windowsBootId } = {}) {
       let data = readJson(profilePath);
       if (data?.version !== 1 || typeof data.stateDir != "string" || !path.isAbsolute(data.stateDir)) throw new Error("Invalid startup service profile. Reinstall the startup tunnel.");
       let profile = validateProfile(data.profile), stateDir = data.stateDir;
       fs.mkdirSync(stateDir, { recursive: !0, mode: 448 });
-      let lockPath = path.join(stateDir, "runner.lock"), stopPath = path.join(stateDir, "stop"), lock;
+      let lockPath = path.join(stateDir, "runner.lock"), stopPath = path.join(stateDir, "stop"), pausePath = path.join(stateDir, "paused.json"), pause = readJson(pausePath);
+      if (pause) {
+        if (typeof pause.bootId != "string" || !pause.bootId) throw new Error("Invalid boot service pause. Use startup start to clear it.");
+        if (pause.bootId === bootId()) return null;
+        fs.unlinkSync(pausePath);
+        try {
+          fs.unlinkSync(stopPath);
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
+      let lock;
       try {
         lock = fs.openSync(lockPath, "wx", 384);
       } catch (error) {
@@ -3643,7 +3715,7 @@ var require_startup_runner = __commonJS({
       fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: (/* @__PURE__ */ new Date()).toISOString() })), fs.closeSync(lock);
       let stopped = !1, timer, logPath = path.join(stateDir, "service.log"), state = { status: "connecting", url: "", error: null }, clean = (value) => String(value || "").replaceAll(profile.token, "[hidden]").replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 2e3);
       function save() {
-        writePrivate(path.join(stateDir, "status.json"), JSON.stringify({ ...state, pid: process.pid, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }));
+        writePrivate(path.join(stateDir, "status.json"), JSON.stringify({ ...state, version, pid: process.pid, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }));
       }
       function log(message) {
         try {
@@ -3657,11 +3729,12 @@ var require_startup_runner = __commonJS({
       }
       let client = new Client({
         ...profile,
-        onConnected: ({ url }) => {
-          stopped || update({ status: "online", url: clean(url), error: null });
+        onConnected: ({ url, dataTransportVersion }) => {
+          stopped || update({ status: "online", url: clean(url), error: null, dataTransportVersion });
         },
-        onDisconnected: () => {
-          stopped || update({ status: "reconnecting", url: "" });
+        onDiagnostic: log,
+        onDisconnected: (info) => {
+          stopped || update({ status: "reconnecting", url: "", error: clean(info?.message || "Tunnel connection closed; reconnecting.") });
         },
         onError: (error) => {
           if (stopped) return;
@@ -3683,13 +3756,13 @@ var require_startup_runner = __commonJS({
       let signalStop = () => stop();
       process.once("SIGINT", signalStop), process.once("SIGTERM", signalStop), timer = setInterval(() => {
         try {
-          fs.existsSync(stopPath) ? stop() : save();
+          fs.existsSync(stopPath) || fs.existsSync(pausePath) ? stop() : save();
         } catch (error) {
           log(error.message), stop(!0);
         }
       }, intervalMs);
       try {
-        save(), client.connect();
+        log(`worker version=${version}`), save(), client.connect();
       } catch (error) {
         throw state = { status: "error", url: "", error: clean(error.message) }, stop(!0), error;
       }
@@ -3946,7 +4019,7 @@ PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
           let entries2 = startup.status();
           entries2.length || console.log("No boot tunnels. Run node ptunnel.js tcp 22 --startup.");
           for (let entry of entries2)
-            console.log(`${entry.id}  ${entry.tunnelType} ${entry.localHost}:${entry.localPort}  ${entry.installed ? entry.status : "installation missing"}`), entry.url && console.log(`Public: ${entry.url}`), entry.error && console.log(`Error: ${entry.error}`), console.log(`Provider: ${entry.provider}
+            console.log(`${entry.id}  ${entry.tunnelType} ${entry.localHost}:${entry.localPort}  ${entry.installed ? entry.status : "installation missing"}`), entry.url && console.log(`Public: ${entry.url}`), entry.error && console.log(`Error: ${entry.error}`), entry.status === "online" && console.log(`Worker version: ${entry.workerVersion || "unknown (reinstall the boot job)"}; data transport: ${entry.dataTransportVersion || "unknown"}`), console.log(`Provider: ${entry.provider}
 Log: ${entry.logPath}
 ${entry.note}`);
           return;
@@ -3961,7 +4034,8 @@ ${entry.note}`);
         if (!["start", "stop", "remove"].includes(action) || positional.length > 3 || options.dryRun) throw new Error("Use startup status, install [--dry-run], start ID, stop ID or remove ID|all.");
         let entries = startup.status(), id = positional[2] || (entries.length === 1 ? entries[0].id : ""), targets = id === "all" && action === "remove" ? entries.map((entry) => entry.id) : [id];
         if (!id) throw new Error("Choose a tunnel ID from startup status.");
-        for (let target of targets) await startup.control(target, action);
+        for (let target of targets)
+          (await startup.control(target, action)).cleanupPending && console.warn("Startup removed. Some runtime files are locked; restart Windows before deleting the old service folder.");
         console.log(`Startup ${action} complete.`);
         return;
       }
