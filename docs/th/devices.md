@@ -22,7 +22,7 @@
 
 1. อัปเดตเซิร์ฟเวอร์เป็น **1.4.0 ขึ้นไป** คง `REQUIRE_DATA_TRANSPORT_V4=true` ได้ ไม่ต้องลดข้อกำหนดของเดสก์ท็อป
 2. เปิดหน้าตั้งค่าของแอดมิน ส่วนรหัสเชื่อมต่อ เลือก **อุปกรณ์ ESP32 / ESP8266** แล้วสร้างรายการ เก็บ **รหัสเชื่อมต่อ** และ **รหัสผ่านเข้าชมเว็บ** ทันที หลังจากนี้เซิร์ฟเวอร์เก็บเฉพาะแฮช
-3. ดาวน์โหลด `PrivateTunnelDevice-v1.4.1-arduino.zip` จาก[หน้าดาวน์โหลด](https://github.com/Jindanet/private-tunnel/releases) แล้วใช้ **Sketch → Include Library → Add .ZIP Library** หรือคัดลอก [`device/PrivateTunnelDevice`](../../device/PrivateTunnelDevice) ทั้งโฟลเดอร์ไปไว้ใน `libraries` ของสมุดสเก็ตช์ ภายในมี `library.properties` กับ `src` โดยตรง หากไม่เห็นให้เปิด IDE ใหม่ ไม่ต้องติดตั้ง WebSocket เพิ่ม
+3. ดาวน์โหลด `PrivateTunnelDevice-v1.4.2-arduino.zip` จาก[หน้าดาวน์โหลด](https://github.com/Jindanet/private-tunnel/releases) แล้วใช้ **Sketch → Include Library → Add .ZIP Library** หรือคัดลอก [`device/PrivateTunnelDevice`](../../device/PrivateTunnelDevice) ทั้งโฟลเดอร์ไปไว้ใน `libraries` ของสมุดสเก็ตช์ ภายในมี `library.properties` กับ `src` โดยตรง หากไม่เห็นให้เปิด IDE ใหม่ ไม่ต้องติดตั้ง WebSocket เพิ่ม
 4. เพิ่มที่อยู่รายการบอร์ดให้ตรงชิปในหน้าตั้งค่า IDE:
 
    ESP32: `https://espressif.github.io/arduino-esp32/package_esp32_index.json`

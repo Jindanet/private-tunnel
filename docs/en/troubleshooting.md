@@ -13,12 +13,19 @@
 | Custom name unavailable | Check administrator publishing policy, syntax, a live tunnel and an offline reservation belonging to another key. Rotation retains ownership; issuing a different key does not. |
 | TCP works locally but not externally | Preopen the assigned allowed port in all firewalls/NAT, check DNS and test from another network. A declared port range does not prove reachability. |
 | TCP port changes | Use the currently assigned `host:port`. Occupied or reserved ports are skipped on reconnect. |
+| RDP/SSH disconnects after being left idle | Versions before 1.4.2 cut idle TCP streams after five minutes. Update server and client, reinstall startup runtime copies, and leave `TCP_IDLE_TIMEOUT_MS=0` unless a limit is intentional. This fixes that timeout mechanism; other disconnect causes still need logs. |
 | Android stops sharing | Check battery/background permissions and Termux:Boot setup. Reconnect logic cannot restart a killed process by itself. |
 | Startup shows stale / missing | Inspect the listed job/log paths, runtime location and OS service status. Reinstall after key or executable changes. Confirm the target service starts too. |
 | Startup returns after stopping | `stop` lasts until next boot. Use `startup remove ID` to uninstall. |
 | Desktop cannot save/decrypt key | Restore/unlock the OS keyring, especially Secret Service/KWallet on Linux. Enter the key again if needed; plaintext fallback is intentionally rejected. |
 | Changed `.env` but domains/password remain | Existing settings are stored in the database. Use administrator Settings; verify the selected DB/path before any reset. |
 | Old binary despite new source | Compare `--version` with the release tag. Download the platform asset again and reinstall any staged boot runtime. A same-version source push skips release publishing. |
+
+## Remote Desktop
+
+For RDP, choose a TCP tunnel to the actual RDP port, normally 3389, and connect to the public TCP address shown by PrivateTunnel. UDP is an optional extra transport; the main RDP connection carries input and graphics over TCP. A TCP-only tunnel should work without a requirement to disable UDP globally. [Microsoft RDP transport specification](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4d98f550-6b0d-4d5f-89f5-2ac8616246a2).
+
+If local-IP RDP works but the tunnel drops, record the idle duration, whether PrivateTunnel reconnects at the same time, the current assigned port and relevant RDP events. A `0x1104` screenshot alone does not establish whether data transport, session configuration or another RDP component failed. Turning on startup while sharing replaces the interactive worker and interrupts existing sessions once.
 
 ## Device-specific checks
 

@@ -28,6 +28,8 @@ Android is not a desktop OS boot-service environment. Storage unlocking, vendor 
 
 Each job stores a private **snapshot** of its server, key, target, profile identity and publishing settings. This copy is necessary because a pre-login worker cannot depend on an unlocked desktop keyring. Unix profiles use private permissions; Windows uses restricted ACLs. The key copy is plaintext within that protected file. Installing startup explicitly opts into this additional credential copy.
 
+Enabling startup on an already shared tunnel switches workers and interrupts active TCP sessions once. Reconnect after installation using the currently reported address. After a client update, reinstall its startup jobs as well; otherwise the protected copy can keep running the older client, including older timeout behavior.
+
 Use the ID and paths shown by installation/status to inspect the generated service and log files. Output logs rotate at roughly 1 MiB with one backup. A worker heartbeat updates every three seconds and becomes stale after fifteen seconds; a stopped/stale status is not evidence that a public firewall is open. Duplicate-worker protection checks the lock holder's process identity before deciding another worker is active.
 
 `stop` is temporary: the next boot starts the installed job again. `remove` disables the persistent job and removes its service configuration. Changing the regular CLI profile does not rewrite existing job snapshots; remove/reinstall affected jobs after key rotation, changed targets or runtime updates. Keep Node and Linux/macOS executable paths stable. Windows stages the runtime in its protected service location.

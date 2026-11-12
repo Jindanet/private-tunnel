@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.2 — 2026-11-12
+
+- Remove the fixed five-minute idle disconnect from both TCP tunnel endpoints. Healthy idle RDP, SSH and other TCP sessions remain open by default; TCP keepalive and WebSocket heartbeat detection remain enabled.
+- Add optional server-side `TCP_IDLE_TIMEOUT_MS` (default `0`, disabled) for deployments that explicitly need idle expiry. Validate the range and retain stream/concurrency bounds.
+- Add client/server regression coverage that advances past the previous idle limit and forwards bytes afterward, plus explicit idle-policy validation. Regenerate the standalone client in CI and document updating both endpoints and installed boot-worker copies.
+
 ## 1.4.1 — 2026-11-11
 
 - Forward device request bodies with their actual content type instead of rejecting non-JSON writes. Preserve text, form and binary bytes within existing size and credit limits.

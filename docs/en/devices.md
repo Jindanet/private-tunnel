@@ -22,7 +22,7 @@ The API and limits are intentionally the same on ESP32 and ESP8266 in this relea
 
 1. Update the PrivateTunnel server to **1.4.0 or later**. Keep `REQUIRE_DATA_TRANSPORT_V4=true`; the device adapter does not require weakening desktop transport policy.
 2. In administrator **Settings → Client access keys**, choose **ESP32 / ESP8266 device** and create a named key. Copy the **connection key** and **visitor password** immediately. Only hashes remain on the server.
-3. Download `PrivateTunnelDevice-v1.4.1-arduino.zip` from [Releases](https://github.com/Jindanet/private-tunnel/releases) and use **Sketch → Include Library → Add .ZIP Library**. Alternatively, copy the complete [`device/PrivateTunnelDevice`](../../device/PrivateTunnelDevice) folder into the sketchbook's `libraries` directory; it directly contains `library.properties` and `src`. Restart the IDE if necessary. No separate WebSocket library is needed.
+3. Download `PrivateTunnelDevice-v1.4.2-arduino.zip` from [Releases](https://github.com/Jindanet/private-tunnel/releases) and use **Sketch → Include Library → Add .ZIP Library**. Alternatively, copy the complete [`device/PrivateTunnelDevice`](../../device/PrivateTunnelDevice) folder into the sketchbook's `libraries` directory; it directly contains `library.properties` and `src`. Restart the IDE if necessary. No separate WebSocket library is needed.
 4. Add the matching board-manager index in Arduino IDE Preferences:
 
    ESP32: `https://espressif.github.io/arduino-esp32/package_esp32_index.json`

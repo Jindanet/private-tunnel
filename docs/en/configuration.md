@@ -18,6 +18,7 @@ Environment variables configure listeners, storage and operational policy. Domai
 | `TCP_ALLOWED_PORTS` | `30000-40000`; declared preopened allocation policy |
 | `TCP_BIND_HOST` | Empty uses OS interface defaults; otherwise a local IP |
 | `TCP_VISITOR_ALLOWLIST` | Empty permits all; comma-separated IPs/CIDRs restrict real TCP peers |
+| `TCP_IDLE_TIMEOUT_MS` | `0`; no application-data idle expiry. Optional integer 1–2147483647 sets a server-side limit in milliseconds; restart after changing |
 | `AUTO_FIREWALL` | `false`; legacy local-rule management does not verify external reachability |
 | `REQUEST_LOGGING` | `true`; false disables new request metadata, not existing rows/backups |
 | `DATA_DIR` | `./data`; private writable state and key registry |
@@ -47,5 +48,6 @@ Back up state first and preserve the original until the new version is verified.
 - **1.4 devices:** existing desktop keys keep their old registry shape. Creating a device key adds `type` and a visitor-secret hash to `client-keys.json`. Older servers reject unknown fields; take a consistent backup before creating device keys. Downgrade using a compatible pre-device registry/database backup rather than stripping fields from live state. Board firmware needs a device key; existing desktop clients do not need to switch protocols.
 
 - **1.4.1 device web login:** requests retain their real content type, and Settings can disable the visitor prompt per device key. Existing keys remain protected until explicitly changed. Saving this policy adds `visitorAuth` to the registry; back up first because 1.4.0 does not understand that field. Policy changes do not rotate secrets or require a new board configuration.
+- **1.4.2 idle TCP:** update both server and client to remove the previous fixed five-minute idle cut-off. Reinstall boot jobs after replacing the client so their saved runtime copy is updated too. Existing TCP sessions are interrupted by job replacement; reconnect using the newly reported address. `TCP_IDLE_TIMEOUT_MS=0` keeps healthy idle sessions open by default.
 
 Legacy administrator SHA-256 password sign-in upgrades storage to scrypt when used before **2027-01-01 UTC**. After that cutoff legacy-hash sign-in is rejected. Upgrade and rotate the administrator password before the deadline; keep bootstrap and recovery material private.

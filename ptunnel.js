@@ -442,7 +442,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "privatetunnel",
-      version: "1.4.1",
+      version: "1.4.2",
       description: "ngrok-like tunnel system - expose local servers to the internet",
       author: "Jindanet",
       license: "MIT",
@@ -3472,7 +3472,7 @@ var require_tunnel_client = __commonJS({
       _handleTcpConnect(connId) {
         if (typeof connId != "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(connId) || this.tcpSockets.has(connId) || this.tcpSockets.size >= 128) return;
         let modern = getTransportVersion(this.ws) === DATA_TRANSPORT_VERSION, sock = net.createConnection({ host: this.localHost, port: this.localPort, allowHalfOpen: modern });
-        sock.setNoDelay(!0), sock.setKeepAlive(!0, 3e4), sock.setTimeout(3e5, () => sock.destroy()), this.tcpSockets.set(connId, sock), this.onRequest({ method: "TCP", path: `→ localhost:${this.localPort}`, statusCode: 0, latency: 0 }), sock.on("data", (chunk) => {
+        sock.setNoDelay(!0), sock.setKeepAlive(!0, 3e4), this.tcpSockets.set(connId, sock), this.onRequest({ method: "TCP", path: `→ localhost:${this.localPort}`, statusCode: 0, latency: 0 }), sock.on("data", (chunk) => {
           this.ws && this.ws.readyState === this.ws.OPEN && (sendData(this.ws, FRAME_TCP_DATA, connId, chunk, sock) || sock.destroy());
         }), sock.on("end", () => {
           modern && sendControl(this.ws, { type: TCP_END, connId });
