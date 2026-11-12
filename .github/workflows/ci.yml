@@ -28,6 +28,37 @@ jobs:
           path: ptunnel.js
           if-no-files-found: error
           retention-days: 7
+  sync-standalone:
+    # Opt-in only: build on GitHub when local application execution is unwanted.
+    # The read-only test/build jobs never receive this job's write permission.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/codex/') && contains(github.event.head_commit.message, '[sync standalone]')
+    needs: standalone
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          persist-credentials: true
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: standalone-client
+          path: ${{ runner.temp }}/standalone-client
+      - name: Commit only the generated standalone client
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          cp "$RUNNER_TEMP/standalone-client/ptunnel.js" ptunnel.js
+          if git diff --quiet -- ptunnel.js; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- ptunnel.js
+          git commit -m 'build: synchronize the CI-generated standalone client'
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
   firmware:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
