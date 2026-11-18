@@ -54,7 +54,7 @@ test('plain output, redirected streams and narrow terminals keep complete addres
 test('resize preserves a long address and remote terminal escapes never reach the console',async(t)=>{
   const f=terminal({columns:80,rows:30});t.after(()=>f.ui.stop());
   const address='https://'+'a'.repeat(100)+'.example.test';
-  f.ui.init();f.ui.setConnected(address,'localhost:80','http');
+  f.ui.init();f.ui.setConnected(address,'localhost:80','http\x1b[2J');
   assert.ok(f.last().includes(address),'Long dashboard addresses are not truncated');
   f.ui.addRequest({method:'GET\x1b[2J',path:'/ภาษาไทย/你好/🙂/'+'界'.repeat(100)+'\x1b]52;c;payload\x07',statusCode:200});
   await new Promise((resolve)=>setImmediate(resolve));

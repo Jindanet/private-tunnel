@@ -18,7 +18,8 @@ function cells(grapheme) {
     || (point >= 0x2e80 && point <= 0xa4cf && point !== 0x303f)
     || (point >= 0xac00 && point <= 0xd7a3) || (point >= 0xf900 && point <= 0xfaff)
     || (point >= 0xfe10 && point <= 0xfe6f) || (point >= 0xff01 && point <= 0xff60)
-    || (point >= 0xffe0 && point <= 0xffe6) || (point >= 0x20000 && point <= 0x3fffd)) ? 2 : 1;
+    || (point >= 0xffe0 && point <= 0xffe6) || (point >= 0x20000 && point <= 0x3fffd)) ? 2
+    : [...grapheme].filter((character) => !/[\p{Mark}\u200c\u200d]/u.test(character)).length;
 }
 
 function width(text) {
@@ -46,7 +47,7 @@ class TunnelUI {
     this.interactive = Boolean(output.isTTY && !plain && env.TERM !== 'dumb');
     this.color = Boolean(output.isTTY && !plain && !Object.hasOwn(env, 'NO_COLOR') && env.TERM !== 'dumb');
     this.localTarget = clean(localTarget);
-    this.tunnelType = tunnelType;
+    this.tunnelType = tunnelType === 'tcp' ? 'tcp' : 'http';
     this.status = 'connecting';
     this.url = ''; this.error = ''; this.hint = '';
     this.requests = [];
@@ -145,7 +146,7 @@ class TunnelUI {
   setConnected(url, localTarget, tunnelType) {
     if (this.stopped) return;
     this.status = 'online'; this.url = clean(url);
-    this.localTarget = clean(localTarget); this.tunnelType = tunnelType || 'http';
+    this.localTarget = clean(localTarget); this.tunnelType = tunnelType === 'tcp' ? 'tcp' : 'http';
     this.error = ''; this.hint = '';
     this.update(() => {
       this.line('ONLINE · กำลังแชร์', 32); this.line('Public address:', 32);
