@@ -10,6 +10,7 @@ const { EventEmitter } = require('node:events');
 const TunnelUI = require('../../client/ui');
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ptunnel-terminal-preview-'));
 app.setPath('userData',directory);app.commandLine.appendSwitch('disable-gpu');
+app.on('window-all-closed',()=>{}); // Capture the second size before explicitly quitting.
 const escape=(text)=>text.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 function html(line){
   const colors={31:'#e74856',32:'#16c60c',33:'#f9f1a5',36:'#3a96dd',37:'#cccccc'};

@@ -6,6 +6,7 @@ const { EventEmitter } = require('node:events');
 const { stripVTControlCharacters } = require('node:util');
 const TunnelUI = require('../client/ui');
 const path = require('node:path');
+const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 
 function terminal({ columns = 120, rows = 24, tty = true, plain = false, env = {} } = {}) {
@@ -77,4 +78,7 @@ test('capture terminal previews on the disposable CI display',{
   let output='';child.stdout.on('data',(data)=>output+=data);child.stderr.on('data',(data)=>output+=data);
   const result=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(result,0,output);
+  for(const name of ['terminal-dashboard.png','terminal-compact.png']){
+    assert.ok(fs.statSync(path.join(process.env.PT_TERMINAL_CAPTURE_DIR,name)).size>500,`${name} was captured`);
+  }
 });
