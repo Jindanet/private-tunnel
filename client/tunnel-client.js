@@ -140,7 +140,9 @@ class TunnelClient {
     if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
     if (msg.type === MSG.TUNNEL_ASSIGNED) {
       const version = msg.dataTransportVersion == null ? 1 : msg.dataTransportVersion;
+      const resetAck = version === DATA_TRANSPORT_VERSION && this.tcpResetAck && msg.tcpResetAck === true;
       if ((this.dataTransportSelected && version !== this.dataTransportVersion)
+        || (this.dataTransportSelected && resetAck !== supportsTcpResetAck(this.ws))
         || (version !== 1 && (version !== DATA_TRANSPORT_VERSION || !this.dataTransportVersions.includes(version)))) {
         this.shouldReconnect = false;
         this.ws.close(1002, 'Unsupported data transport');
@@ -148,7 +150,7 @@ class TunnelClient {
         return;
       }
       if (version === DATA_TRANSPORT_VERSION) selectTransport(this.ws, version, { isServer: false,
-        tcpResetAck: this.tcpResetAck && msg.tcpResetAck === true });
+        tcpResetAck: resetAck });
       this.dataTransportVersion = version;
       this.dataTransportSelected = true;
     }

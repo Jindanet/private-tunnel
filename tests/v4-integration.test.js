@@ -158,10 +158,10 @@ async function connectTunnel(t, servicePort, serverPort, options = {}) {
   return { client, assignment, errors };
 }
 
-function assertSelected(tunnel, version) {
+function assertSelected(tunnel, version, tcpResetAck = version === 4 && tunnel.client.tcpResetAck) {
   assert.equal(tunnel.assignment.dataTransportVersion, version, 'The assignment callback exposes the negotiated data transport');
   assert.equal(tunnel.client.dataTransportVersion, version, 'The running client uses the negotiated data transport');
-  assert.equal(tunnel.assignment.tcpResetAck, version === 4 && tunnel.client.tcpResetAck,
+  assert.equal(tunnel.assignment.tcpResetAck, tcpResetAck,
     'Actual gateway negotiation enables reset barriers only when both endpoints support them');
 }
 
@@ -453,7 +453,11 @@ test('a default client advertises v4 and falls back when an old server omits the
   assert.deepEqual(tunnel.errors, []);
 });
 
-test('an established v4 connection rejects a second assignment that tries to select v1', {timeout: TIMEOUT}, async (t) => {
+for (const [change, selection] of [
+  ['select v1', {}],
+  ['change reset capabilities', {dataTransportVersion:4,tcpResetAck:true}],
+]) {
+test(`an established v4 connection rejects a second assignment that tries to ${change}`, {timeout: TIMEOUT}, async (t) => {
   const local = trackServer(t, http.createServer((_req,res)=>res.end('local')));
   const localPort = await listen(local);
   const server = new WebSocketServer({host:LOOPBACK,port:0,perMessageDeflate:false});
@@ -472,12 +476,13 @@ test('an established v4 connection rejects a second assignment that tries to sel
     });
   });
   const tunnel=await connectTunnel(t,localPort,server.address().port);
-  assertSelected(tunnel,4);
+  assertSelected(tunnel,4,false);
   const closed=once(tunnel.client.ws,'close');
-  peer.send(JSON.stringify({type:MSG.TUNNEL_ASSIGNED,tunnelType:'http',url:'http://stale.apps.example.test'}));
+  peer.send(JSON.stringify({type:MSG.TUNNEL_ASSIGNED,tunnelType:'http',url:'http://stale.apps.example.test',...selection}));
   assert.equal((await deadline(closed,'Client accepted a transport downgrade'))[0],1002);
   assert.equal(tunnel.client.dataTransportVersion,4);
   assert.equal(require('../shared/tunnel-v4').supportsTcpResetAck(tunnel.client.ws),false,'A v4 server that omits the capability still uses the old wire protocol');
   assert.equal(tunnel.client.shouldReconnect,false);
   assert.match(tunnel.errors.at(-1).message,/unsupported data transport/i);
 });
+}

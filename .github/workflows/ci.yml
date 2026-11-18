@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: 22
       - run: node --test --test-reporter=tap tests/tunnel-v4.test.js 2>&1 | tee "$RUNNER_TEMP/ptunnel-tests.log"
+        shell: bash
       - name: Annotate transport regressions
         if: failure()
         run: node .github/scripts/test-diagnostics.mjs
@@ -142,6 +143,7 @@ jobs:
         run: npm run check:termux
       - run: npm run build:termux
       - name: Run tests with a virtual display
+        shell: bash
         if: runner.os == 'Linux'
         env:
           PT_ADMIN_CAPTURE_DIR: ${{ runner.temp }}/ptunnel-admin-previews

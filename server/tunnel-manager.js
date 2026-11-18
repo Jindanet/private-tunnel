@@ -174,7 +174,8 @@ class TunnelManager {
           return;
         }
         if ((currentTunnelKey || getTransportVersion(ws) === DATA_TRANSPORT_VERSION)
-          && selectedVersion !== getTransportVersion(ws)) {
+          && (selectedVersion !== getTransportVersion(ws)
+            || (selectedVersion === DATA_TRANSPORT_VERSION && supportsTcpResetAck(ws) !== (msg.tcpResetAck === true)))) {
           sendControl(ws, {type: MSG.TUNNEL_ERROR, message: 'Reconnect to change the data transport.'});
           return;
         }

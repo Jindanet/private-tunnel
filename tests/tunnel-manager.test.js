@@ -310,6 +310,11 @@ test('TCP reset barriers are negotiated only for clients that explicitly offer t
     await flush();
     assert.equal(ws.messages.at(-1).tcpResetAck,offered===true);
     assert.equal(require('../shared/tunnel-v4').supportsTcpResetAck(ws),offered===true);
+    const active=[...manager.tunnels.values()][0];
+    ws.control({type:MSG.TUNNEL_OPEN,protocolVersion:1,dataTransportVersions:[4],tcpResetAck:offered!==true});
+    await flush();
+    assert.equal(ws.messages.at(-1).type,MSG.TUNNEL_ERROR);
+    assert.equal(manager.tunnels.get(active.tunnelKey),active,'Reject a capability change without removing the current tunnel');
     ws.close();
   }
 });
