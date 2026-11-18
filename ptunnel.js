@@ -343,6 +343,7 @@ var require_startup = __commonJS({
             installed: fs.existsSync(info.profilePath),
             workerVersion: state?.version || null,
             dataTransportVersion: state?.dataTransportVersion || null,
+            tcpResetAck: state?.tcpResetAck === !0,
             lastStatus: state?.status || null,
             updatedAt: state?.updatedAt || null
           };
@@ -609,7 +610,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "privatetunnel",
-      version: "1.4.4",
+      version: "1.4.5",
       description: "ngrok-like tunnel system - expose local servers to the internet",
       author: "Jindanet",
       license: "MIT",
@@ -3028,7 +3029,7 @@ var require_protocol = __commonJS({
 var require_tunnel_v4 = __commonJS({
   "shared/tunnel-v4.js"(exports2, module2) {
     "use strict";
-    var base = require_protocol(), DATA_TRANSPORT_VERSION = 4, TCP_END = "tcp:end", WINDOW = 128 * 1024, CONNECTION_WINDOW = 1024 * 1024, MAX_FRAME_BYTES = 32 * 1024, FRAME_CREDIT_OVERHEAD = 256, MAX_STREAM_QUEUE_BYTES = 512 * 1024, MAX_TOTAL_QUEUE_BYTES = 4 * 1024 * 1024, STREAM_QUEUE_SOFT_CHUNKS = 256, MAX_STREAM_QUEUE_CHUNKS = 1024, MAX_TOTAL_QUEUE_CHUNKS = 8192, MAX_RECORDS = 256, WS_HIGH_WATER = 256 * 1024, WS_HARD_LIMIT = 8 * 1024 * 1024, MAX_CONTROL_QUEUE_BYTES = 128 * 1024, MAX_FLUSH_BYTES = 256 * 1024, MAX_TOMBSTONES = 128, CREDIT = 68, FRAME_TOKEN = /* @__PURE__ */ Symbol("v4 received frame"), transports = /* @__PURE__ */ new WeakMap(), VALID_CONTROL_TYPES = /* @__PURE__ */ new Set([...Object.values(base.MSG), TCP_END]);
+    var base = require_protocol(), DATA_TRANSPORT_VERSION = 4, TCP_END = "tcp:end", TCP_RESET_ACK = "tcp:reset-ack", WINDOW = 128 * 1024, CONNECTION_WINDOW = 1024 * 1024, MAX_FRAME_BYTES = 32 * 1024, FRAME_CREDIT_OVERHEAD = 256, MAX_STREAM_QUEUE_BYTES = 512 * 1024, MAX_TOTAL_QUEUE_BYTES = 4 * 1024 * 1024, STREAM_QUEUE_SOFT_CHUNKS = 256, MAX_STREAM_QUEUE_CHUNKS = 1024, MAX_TOTAL_QUEUE_CHUNKS = 8192, MAX_RECORDS = 256, WS_HIGH_WATER = 256 * 1024, WS_HARD_LIMIT = 8 * 1024 * 1024, MAX_CONTROL_QUEUE_BYTES = 128 * 1024, MAX_FLUSH_BYTES = 256 * 1024, MAX_TOMBSTONES = 128, CREDIT = 68, FRAME_TOKEN = /* @__PURE__ */ Symbol("v4 received frame"), transports = /* @__PURE__ */ new WeakMap(), VALID_CONTROL_TYPES = /* @__PURE__ */ new Set([...Object.values(base.MSG), TCP_END, TCP_RESET_ACK]);
     function idOf(value) {
       return typeof value == "string" && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value) ? value.toLowerCase() : null;
     }
@@ -3038,18 +3039,20 @@ var require_tunnel_v4 = __commonJS({
     function open(state) {
       return !state.closed && state.ws.readyState === state.ws.OPEN;
     }
-    function selectTransport(ws, version, { isServer = !1 } = {}) {
+    function selectTransport(ws, version, { isServer = !1, tcpResetAck = !1 } = {}) {
       if (version !== DATA_TRANSPORT_VERSION) throw new RangeError("Unsupported data transport version");
       if (!ws || typeof ws.send != "function") throw new TypeError("A WebSocket is required");
       let existing = current(ws);
       if (existing) {
         if (existing.closed) throw new Error("The selected transport has been disposed");
         if (existing.isServer !== !!isServer) throw new Error("Transport role cannot change");
+        if (existing.tcpResetAck !== !!tcpResetAck) throw new Error("Transport capabilities cannot change");
         return existing;
       }
       let state = {
         ws,
         isServer: !!isServer,
+        tcpResetAck: !!tcpResetAck,
         closed: !1,
         records: /* @__PURE__ */ new Map(),
         tombstones: /* @__PURE__ */ new Map(),
@@ -3072,6 +3075,9 @@ var require_tunnel_v4 = __commonJS({
     }
     function getTransportVersion(ws) {
       return current(ws) ? DATA_TRANSPORT_VERSION : base.PROTOCOL_VERSION;
+    }
+    function supportsTcpResetAck(ws) {
+      return !!current(ws)?.tcpResetAck;
     }
     function fail(state, reason = "Invalid v4 transport") {
       if (state.closed) return !1;
@@ -3117,6 +3123,11 @@ var require_tunnel_v4 = __commonJS({
         remoteEnded: !1,
         reset: !1,
         tombstone: !1,
+        localResetSent: !1,
+        remoteResetSeen: !1,
+        resetAckReceived: !1,
+        resetAckQueued: !1,
+        resetAckSent: !1,
         queue: [],
         queuedBytes: 0,
         sentOutstanding: 0,
@@ -3133,7 +3144,7 @@ var require_tunnel_v4 = __commonJS({
       return record.kind === "tcp" ? base.FRAME_TCP_DATA : state.isServer === outgoing ? base.FRAME_REQUEST_BODY : base.FRAME_RESPONSE_BODY;
     }
     function retire(state, record) {
-      if (!(state.closed || record.tombstone || record.queuedBytes || record.sentOutstanding || record.receivedOutstanding || record.controlPending) && !(!record.reset && !(record.localEndSent && record.remoteEnded))) {
+      if (!(state.closed || record.tombstone || record.queuedBytes || record.sentOutstanding || record.receivedOutstanding || record.controlPending) && !(!record.reset && !(record.localEndSent && record.remoteEnded)) && !(state.tcpResetAck && record.kind === "tcp" && (record.localResetSent && !record.resetAckReceived || record.remoteResetSeen && !record.resetAckSent))) {
         for (state.records.delete(record.id), record.tombstone = !0, record.sources.clear(), state.tombstones.set(record.id, record); state.tombstones.size > MAX_TOMBSTONES; )
           state.tombstones.delete(state.tombstones.keys().next().value);
         syncSources(state);
@@ -3143,7 +3154,7 @@ var require_tunnel_v4 = __commonJS({
       return !entry.afterData || entry.record.queuedBytes === 0;
     }
     function sentControl(state, entry) {
-      entry.record && (entry.record.controlPending--, entry.kind === "start" && (entry.record.startedOnWire = !0), entry.kind === "end" && (entry.record.localEndSent = !0), ready(state, entry.record), retire(state, entry.record));
+      entry.record && (entry.record.controlPending--, entry.kind === "start" && (entry.record.startedOnWire = !0), entry.kind === "end" && (entry.record.localEndSent = !0), entry.kind === "reset-ack" && (entry.record.resetAckSent = !0), ready(state, entry.record), retire(state, entry.record));
     }
     function queueControl(state, payload, record = null, kind = "control", afterData = !1) {
       let bytes = Buffer.byteLength(payload);
@@ -3251,15 +3262,15 @@ var require_tunnel_v4 = __commonJS({
       credit[0] = CREDIT, record.idBytes.copy(credit, 1), credit.writeUInt32BE(units, 17), queueControl(state, credit, record, "credit"), retire(state, record);
     }
     function cancel(state, record, notify = !1) {
-      if (!(!record || record.reset || state.closed)) {
-        record.reset = !0, record.localEnded = record.remoteEnded = !0, state.queuedBytes -= record.queuedBytes, state.queuedChunks -= record.queue.length, record.queuedBytes = 0, record.queue = [], record.ready = !1, state.ready = state.ready.filter((entry) => entry !== record), dropControls(state, record);
-        for (let token of [...record.tokens]) releaseToken(token);
-        if (notify && (record.startedOnWire || !record.locallyOpened)) {
-          let msg = record.kind === "tcp" ? { type: base.MSG.TCP_CLOSE, connId: record.id } : { type: base.MSG.STREAM_ERROR, requestId: record.id, message: "Tunnel stream cancelled" };
-          queueControl(state, JSON.stringify(msg), record);
-        }
-        syncSources(state), retire(state, record), schedule(state);
+      if (!record || record.reset || state.closed) return;
+      let sendReset = notify && (record.startedOnWire || !record.locallyOpened);
+      sendReset && state.tcpResetAck && record.kind === "tcp" && (record.localResetSent = !0), record.reset = !0, record.localEnded = record.remoteEnded = !0, state.queuedBytes -= record.queuedBytes, state.queuedChunks -= record.queue.length, record.queuedBytes = 0, record.queue = [], record.ready = !1, state.ready = state.ready.filter((entry) => entry !== record), dropControls(state, record);
+      for (let token of [...record.tokens]) releaseToken(token);
+      if (sendReset) {
+        let msg = record.kind === "tcp" ? { type: base.MSG.TCP_CLOSE, connId: record.id } : { type: base.MSG.STREAM_ERROR, requestId: record.id, message: "Tunnel stream cancelled" };
+        queueControl(state, JSON.stringify(msg), record);
       }
+      syncSources(state), retire(state, record), schedule(state);
     }
     function observeControl(state, msg, outgoing) {
       if (!msg || typeof msg != "object" || Array.isArray(msg) || !VALID_CONTROL_TYPES.has(msg.type)) return null;
@@ -3269,12 +3280,26 @@ var require_tunnel_v4 = __commonJS({
         let id2 = idOf(type === base.MSG.TCP_CONNECT ? msg.connId : msg.requestId), record2 = makeRecord(state, id2, type === base.MSG.TCP_CONNECT ? "tcp" : "http", outgoing);
         return record2 ? { record: record2, kind: "start" } : null;
       }
-      let isTcp = type === base.MSG.TCP_CLOSE || type === TCP_END;
-      if (![base.MSG.RESPONSE_START, base.MSG.STREAM_END, base.MSG.STREAM_ERROR, base.MSG.TCP_CLOSE, TCP_END].includes(type)) return {};
+      let isTcp = type === base.MSG.TCP_CLOSE || type === TCP_END || type === TCP_RESET_ACK;
+      if (type === TCP_RESET_ACK && (!state.tcpResetAck || outgoing)) return null;
+      if (![base.MSG.RESPONSE_START, base.MSG.STREAM_END, base.MSG.STREAM_ERROR, base.MSG.TCP_CLOSE, TCP_END, TCP_RESET_ACK].includes(type)) return {};
       let id = idOf(isTcp ? msg.connId : msg.requestId);
       if (!id) return null;
       let record = findRecord(state, id);
-      return record ? record.kind !== (isTcp ? "tcp" : "http") ? null : type === base.MSG.STREAM_ERROR || type === base.MSG.TCP_CLOSE ? (cancel(state, record), { record, kind: "reset" }) : record.reset || record.tombstone ? { ignored: !0 } : type === base.MSG.RESPONSE_START ? state.isServer === outgoing ? null : { record } : type === base.MSG.STREAM_END && (state.isServer === outgoing ? msg.direction !== "request" : msg.direction !== void 0 && msg.direction !== "response") ? null : outgoing ? record.localEnded ? { ignored: !0 } : (record.localEnded = !0, { record, kind: "end", afterData: !0 }) : (record.remoteEnded = !0, retire(state, record), { record, kind: "end" }) : type === base.MSG.RESPONSE_START ? null : { ignored: !0 };
+      if (!record) return type === base.MSG.RESPONSE_START ? null : { ignored: !0 };
+      if (record.kind !== (isTcp ? "tcp" : "http")) return null;
+      if (type === TCP_RESET_ACK)
+        return !record.reset || !record.localResetSent ? null : (record.resetAckReceived = !0, retire(state, record), { ignored: !0 });
+      if (type === base.MSG.STREAM_ERROR || type === base.MSG.TCP_CLOSE) {
+        if (state.tcpResetAck && record.kind === "tcp")
+          if (outgoing) {
+            if (record.reset) return { ignored: !0 };
+            record.localResetSent = !0;
+          } else
+            record.remoteResetSeen = !0;
+        return cancel(state, record), !outgoing && state.tcpResetAck && record.kind === "tcp" && !record.resetAckQueued && (record.resetAckQueued = !0, queueControl(state, JSON.stringify({ type: TCP_RESET_ACK, connId: record.id }), record, "reset-ack")), { record, kind: "reset" };
+      }
+      return record.reset || record.tombstone ? { ignored: !0 } : type === base.MSG.RESPONSE_START ? state.isServer === outgoing ? null : { record } : type === base.MSG.STREAM_END && (state.isServer === outgoing ? msg.direction !== "request" : msg.direction !== void 0 && msg.direction !== "response") ? null : outgoing ? record.localEnded ? { ignored: !0 } : (record.localEnded = !0, { record, kind: "end", afterData: !0 }) : (record.remoteEnded = !0, retire(state, record), { record, kind: "end" });
     }
     function receiveControl(ws, msg) {
       let state = current(ws);
@@ -3430,6 +3455,7 @@ var require_tunnel_v4 = __commonJS({
       ...base,
       DATA_TRANSPORT_VERSION,
       TCP_END,
+      TCP_RESET_ACK,
       WINDOW,
       CONNECTION_WINDOW,
       MAX_FRAME_BYTES,
@@ -3445,6 +3471,7 @@ var require_tunnel_v4 = __commonJS({
       MAX_CONTROL_QUEUE_BYTES,
       selectTransport,
       getTransportVersion,
+      supportsTcpResetAck,
       receiveControl,
       decodeDataFrame,
       writeFrame,
@@ -3513,6 +3540,7 @@ var require_tunnel_client = __commonJS({
       FRAME_TCP_DATA,
       selectTransport,
       getTransportVersion,
+      supportsTcpResetAck,
       receiveControl,
       decodeDataFrame,
       sendControl,
@@ -3522,7 +3550,7 @@ var require_tunnel_client = __commonJS({
       cancelStream
     } = require_tunnel_v4(), { createForwardRequest } = require_local_forwarder(), { requireSecureServerWebSocketUrl } = require_server_url(), TunnelClient = class {
       constructor(options) {
-        this.serverUrl = requireSecureServerWebSocketUrl(options.serverUrl), this.token = options.token || null, this.localHost = options.localHost || "localhost", this.localPort = options.localPort, this.clientId = options.clientId || null, this.tunnelType = options.tunnelType || "http", this.publishDomain = options.publishDomain || "", this.publishMode = options.publishMode === "root" ? "root" : "subdomain", this.desiredSubdomain = String(options.desiredSubdomain || "").trim().toLowerCase(), this.dataTransportVersions = Array.isArray(options.dataTransportVersions) ? options.dataTransportVersions.filter((value) => value === 1 || value === DATA_TRANSPORT_VERSION) : [DATA_TRANSPORT_VERSION, 1], this.dataTransportVersion = 1, this.dataTransportSelected = !1, this.ws = null, this.subdomain = null, this.url = null, this.connected = !1, this.reconnectAttempts = 0, this.maxReconnectDelay = 3e4, this.shouldReconnect = !0, this.reconnectTimer = null, this.serverSilenceTimer = null, this.onConnected = options.onConnected || (() => {
+        this.serverUrl = requireSecureServerWebSocketUrl(options.serverUrl), this.token = options.token || null, this.localHost = options.localHost || "localhost", this.localPort = options.localPort, this.clientId = options.clientId || null, this.tunnelType = options.tunnelType || "http", this.publishDomain = options.publishDomain || "", this.publishMode = options.publishMode === "root" ? "root" : "subdomain", this.desiredSubdomain = String(options.desiredSubdomain || "").trim().toLowerCase(), this.dataTransportVersions = Array.isArray(options.dataTransportVersions) ? options.dataTransportVersions.filter((value) => value === 1 || value === DATA_TRANSPORT_VERSION) : [DATA_TRANSPORT_VERSION, 1], this.dataTransportVersion = 1, this.tcpResetAck = options.tcpResetAck !== !1, this.dataTransportSelected = !1, this.ws = null, this.subdomain = null, this.url = null, this.connected = !1, this.reconnectAttempts = 0, this.maxReconnectDelay = 3e4, this.shouldReconnect = !0, this.reconnectTimer = null, this.serverSilenceTimer = null, this.onConnected = options.onConnected || (() => {
         }), this.onDisconnected = options.onDisconnected || (() => {
         }), this.onRequest = options.onRequest || (() => {
         }), this.onError = options.onError || (() => {
@@ -3539,12 +3567,13 @@ var require_tunnel_client = __commonJS({
           handshakeTimeout: 1e4,
           maxPayload: 1024 * 1024,
           perMessageDeflate: !1
-        });
+        }), connectedAt = Date.now();
         this.ws.on("open", () => {
           this.ws === ws && (this.connected = !0, this._watchServer(ws), sendControl(this.ws, {
             type: MSG.TUNNEL_OPEN,
             protocolVersion: PROTOCOL_VERSION,
             dataTransportVersions: this.dataTransportVersions,
+            tcpResetAck: this.tcpResetAck,
             tunnelType: this.tunnelType,
             localPort: this.localPort,
             clientId: this.clientId,
@@ -3566,18 +3595,19 @@ var require_tunnel_client = __commonJS({
                 this.onError(e);
               }
         }), this.ws.on("close", (code) => {
-          if (this.ws === ws) {
-            if (clearTimeout(this.serverSilenceTimer), this.serverSilenceTimer = null, this.connected = !1, this._clearRequestStreams(new Error("Tunnel WebSocket closed")), this._clearTcpSockets(), code === 4001) {
-              this.shouldReconnect = !1, this.onError(Object.assign(new Error("Unauthorized: invalid or missing token"), { code: "EUNAUTHORIZED" }));
-              return;
-            }
-            if (this.shouldReconnect) {
-              let message = ws.tunnelFailure || `Tunnel WebSocket closed (code ${code}); active TCP sessions were closed.`;
-              this.onDiagnostic(message), this.onDisconnected({ code, message }), this._reconnect();
-            }
+          if (this.ws !== ws) return;
+          clearTimeout(this.serverSilenceTimer), this.serverSilenceTimer = null, this.connected = !1;
+          let activeTcp = this.tcpSockets.size;
+          if (this._clearRequestStreams(new Error("Tunnel WebSocket closed")), this._clearTcpSockets(), code === 4001) {
+            this.shouldReconnect = !1, this.onError(Object.assign(new Error("Unauthorized: invalid or missing token"), { code: "EUNAUTHORIZED" }));
+            return;
+          }
+          if (this.shouldReconnect) {
+            let cause = ws.tunnelFailure || "WebSocket closed without a local failure reason", message = `Tunnel WebSocket closed (code ${code}); ${cause}; uptime=${Math.round((Date.now() - connectedAt) / 1e3)}s activeTCP=${activeTcp} transport=${this.dataTransportVersion}; active TCP sessions were closed.`;
+            this.onDiagnostic(message), this.onDisconnected({ code, message }), this._reconnect();
           }
         }), this.ws.on("error", (err) => {
-          this.ws === ws && (err.message && /Unexpected server response: 401/.test(err.message) && (this.shouldReconnect = !1, err.code = "EUNAUTHORIZED"), this.onError(err));
+          this.ws === ws && (this.onDiagnostic(`Tunnel WebSocket error: ${/^[A-Z0-9_]{1,64}$/.test(err.code || "") ? err.code : "WebSocket error"}`), err.message && /Unexpected server response: 401/.test(err.message) && (this.shouldReconnect = !1, err.code = "EUNAUTHORIZED"), this.onError(err));
         });
       }
       _handleControlMessage(msg) {
@@ -3588,7 +3618,10 @@ var require_tunnel_client = __commonJS({
               this.shouldReconnect = !1, this.ws.close(1002, "Unsupported data transport"), this.onError(new Error("Server selected an unsupported data transport."));
               return;
             }
-            version === DATA_TRANSPORT_VERSION && selectTransport(this.ws, version, { isServer: !1 }), this.dataTransportVersion = version, this.dataTransportSelected = !0;
+            version === DATA_TRANSPORT_VERSION && selectTransport(this.ws, version, {
+              isServer: !1,
+              tcpResetAck: this.tcpResetAck && msg.tcpResetAck === !0
+            }), this.dataTransportVersion = version, this.dataTransportSelected = !0;
           }
           if (receiveControl(this.ws, msg))
             switch (msg.type) {
@@ -3600,7 +3633,8 @@ var require_tunnel_client = __commonJS({
                   publishMode: msg.publishMode || this.publishMode,
                   url: msg.url,
                   tunnelType: msg.tunnelType,
-                  dataTransportVersion: this.dataTransportVersion
+                  dataTransportVersion: this.dataTransportVersion,
+                  tcpResetAck: supportsTcpResetAck(this.ws)
                 });
                 break;
               case MSG.TUNNEL_ERROR:
@@ -3650,7 +3684,7 @@ var require_tunnel_client = __commonJS({
         }), sock.on("end", () => {
           modern && sendControl(this.ws, { type: TCP_END, connId });
         }), sock.on("close", (hadError) => {
-          this.tcpSockets.delete(connId), this.onDiagnostic(`TCP ${connId} closed: ${socketError || (sock._tunnelRemoteReset ? "remote reset" : hadError ? "socket error" : "socket closed")}; read=${sock.bytesRead || 0} written=${sock.bytesWritten || 0} eof=${!!sock.readableEnded} finished=${!!sock.writableFinished}`), !sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished) && this.ws && this.ws.readyState === this.ws.OPEN && sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
+          this.tcpSockets.delete(connId), this.onDiagnostic(`TCP ${connId} closed: ${socketError || (sock._tunnelRemoteReset ? "remote reset" : sock._tunnelDisconnected ? "tunnel disconnected" : hadError ? "socket error" : "socket closed")}; read=${sock.bytesRead || 0} written=${sock.bytesWritten || 0} eof=${!!sock.readableEnded} finished=${!!sock.writableFinished}`), !sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished) && this.ws && this.ws.readyState === this.ws.OPEN && sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
         }), sock.on("connect", () => {
           this.onRequest({ method: "TCP", path: `connected → localhost:${this.localPort}`, statusCode: 200, latency: 0 });
         }), sock.on("error", (error) => {
@@ -3745,7 +3779,7 @@ var require_tunnel_client = __commonJS({
       }
       _clearTcpSockets() {
         for (let [connId, sock] of this.tcpSockets)
-          cancelStream(this.ws, connId), sock.destroy();
+          sock._tunnelDisconnected = !0, cancelStream(this.ws, connId), sock.destroy();
         this.tcpSockets.clear();
       }
       _watchServer(ws) {
@@ -3856,8 +3890,8 @@ var require_startup_runner = __commonJS({
       }
       let client = new Client({
         ...profile,
-        onConnected: ({ url, dataTransportVersion }) => {
-          stopped || update({ status: "online", url: clean(url), error: null, dataTransportVersion });
+        onConnected: ({ url, dataTransportVersion, tcpResetAck }) => {
+          stopped || (update({ status: "online", url: clean(url), error: null, dataTransportVersion, tcpResetAck }), log(`transport=${dataTransportVersion} tcp-reset-ack=${tcpResetAck ? "on" : "off (peer does not support it)"}`));
         },
         onDiagnostic: log,
         onDisconnected: (info) => {
@@ -4151,7 +4185,7 @@ PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
           let entries2 = startup.status();
           entries2.length || console.log("No boot tunnels. Run node ptunnel.js tcp 22 --startup.");
           for (let entry of entries2)
-            console.log(`${entry.id}  ${entry.tunnelType} ${entry.localHost}:${entry.localPort}  ${entry.installed ? entry.status : "installation missing"}`), entry.url && console.log(`Public: ${entry.url}`), entry.error && console.log(`Error: ${entry.error}`), entry.status === "online" && console.log(`Worker version: ${entry.workerVersion || "unknown (reinstall the boot job)"}; data transport: ${entry.dataTransportVersion || "unknown"}`), console.log(`Provider: ${entry.provider}
+            console.log(`${entry.id}  ${entry.tunnelType} ${entry.localHost}:${entry.localPort}  ${entry.installed ? entry.status : "installation missing"}`), entry.url && console.log(`Public: ${entry.url}`), entry.error && console.log(`Error: ${entry.error}`), entry.status === "online" && console.log(`Worker version: ${entry.workerVersion || "unknown (reinstall the boot job)"}; data transport: ${entry.dataTransportVersion || "unknown"}; TCP reset ACK: ${entry.tcpResetAck ? "on" : "off"}`), console.log(`Provider: ${entry.provider}
 Log: ${entry.logPath}
 ${entry.note}`);
           return;
