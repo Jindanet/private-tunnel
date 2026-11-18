@@ -1,0 +1,3 @@
+# npm normalizes executable shebangs to LF; avoid dirtying the bundle on Windows.
+/ptunnel.js text eol=lf
+/*.cmd text eol=crlf
