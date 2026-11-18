@@ -2,7 +2,19 @@
 
 [Overview](../../README.md) · [Thai guide](../th/cli.md)
 
-The standalone `ptunnel.js` needs only Node.js **22.12+**. Native CLI downloads expose the same commands; replace `node ptunnel.js` with the downloaded executable or `ptunnel` if it is on PATH.
+The standalone `ptunnel.js` needs only Node.js **22.12+**. Native CLI downloads expose the same commands; replace `node ptunnel.js` with the downloaded executable or `ptunnel` / `ptn` if installed on PATH.
+
+`ptunnel` and `ptn` are two names for the same bundled client and saved profile. Install both from the checkout with `npm link --ignore-scripts`, then use either name from any folder:
+
+```bash
+ptn http 80
+ptunnel http 80
+ptn 80
+ptn tcp 3389
+ptn
+```
+
+Running either name without arguments opens the most recently saved tunnel, or first-time setup when no target is saved. After updating a previously linked checkout, run the link command once more to register the new `ptn` name. A native executable may also be named `ptunnel` or `ptn` (`.exe` on Windows); it uses the same CLI profile.
 
 Interactive terminals at least 60 columns wide and 12 rows tall show the live dashboard: status, forwarding address, connection count and recent requests. Narrow Termux screens, redirected output and `--plain` use line-by-line logs. Public addresses remain complete in both modes. Ctrl+C stops sharing and restores the terminal cursor.
 
@@ -12,7 +24,7 @@ The preview uses example requests and is captured from the CLI renderer on GitHu
 
 ![Compact terminal dashboard with an example address](../images/terminal-compact.png)
 
-On Windows CMD, the source folder includes `ptunnel.cmd` so `ptunnel 80` and `ptunnel http 80` run through Node.js. Without that launcher, CMD can find the local `ptunnel.js` before the command installed by `npm link` and invoke Windows Script Host. You can always use `node ptunnel.js http 80`, or explicitly call `ptunnel.cmd http 80`. Run `npm link` once from the checkout to make the command available from other folders. This project is not a Python module.
+On Windows CMD, the source folder includes `ptunnel.cmd` and `ptn.cmd`, so both names run through Node.js there without linking first. Without `ptunnel.cmd`, CMD can find the local `ptunnel.js` before the npm-linked command and invoke Windows Script Host. You can always use `node ptunnel.js http 80`, or explicitly call either `.cmd` launcher. This project is not a Python module.
 
 ```bash
 node ptunnel.js

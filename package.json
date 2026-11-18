@@ -9,7 +9,8 @@
   },
   "private": true,
   "bin": {
-    "ptunnel": "./client/bin/ptunnel.js"
+    "ptunnel": "./ptunnel.js",
+    "ptn": "./ptunnel.js"
   },
   "main": "app/main.js",
   "scripts": {

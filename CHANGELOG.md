@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.4 — 2026-11-18
+
+- Restore the live terminal dashboard on interactive consoles. Keep narrow terminals, redirected output and `--plain` readable, with complete public addresses, bounded request history and cursor restoration.
+- Fix Windows CMD finding the local JavaScript file before the npm-linked command by adding explicit Node launchers. Register `ptn` alongside `ptunnel`, using the same bundled client, settings and commands.
+- Test real CMD lookup and isolated npm links, terminal resizing, Unicode and escape handling. Generate terminal previews and the standalone bundle on CI, and update the English and Thai guides without launching the application locally.
+
+## 1.4.3 — 2026-11-12
+
+- Confirm Windows startup workers have stopped before reporting success or removing their runtime. Prevent task retries from undoing Stop, including legacy launchers, and recover partial removals with locked runtime files.
+- Isolate Windows PowerShell modules from inherited PowerShell 7 paths, coordinate desktop startup actions, and record worker versions and connection diagnostics. Validate the real service lifecycle on disposable Windows CI runners.
+
 ## 1.4.2 — 2026-11-12
 
 - Remove the fixed five-minute idle disconnect from both TCP tunnel endpoints. Healthy idle RDP, SSH and other TCP sessions remain open by default; TCP keepalive and WebSocket heartbeat detection remain enabled.

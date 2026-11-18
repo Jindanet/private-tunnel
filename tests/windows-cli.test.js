@@ -21,7 +21,7 @@ test('CMD runs Node from the source folder and the isolated npm link instead of 
     fs.rmSync(resolved,{recursive:true,force:true});
   });
   fs.mkdirSync(source);fs.mkdirSync(prefix);
-  for(const file of ['ptunnel.js','ptunnel.cmd'])fs.copyFileSync(path.join(root,file),path.join(source,file));
+  for(const file of ['ptunnel.js','ptunnel.cmd','ptn.cmd'])fs.copyFileSync(path.join(root,file),path.join(source,file));
   const config=path.join(directory,'never-created.json');
   const env={...process.env,PATH:prefix+path.delimiter+process.env.PATH,PTUNNEL_CONFIG_PATH:config,
     NPM_CONFIG_PREFIX:prefix,NPM_CONFIG_AUDIT:'false',NPM_CONFIG_FUND:'false',NO_COLOR:'1'};
@@ -32,13 +32,16 @@ test('CMD runs Node from the source folder and the isolated npm link instead of 
   assert.equal(resolution.status,0,resolution.stderr);
   assert.equal(fs.realpathSync.native(resolution.stdout.trim().split(/\r?\n/)[0]).toLowerCase(),fs.realpathSync.native(path.join(source,'ptunnel.cmd')).toLowerCase());
   const version=require('../package.json').version;
-  for(const command of ['ptunnel --version','ptunnel.cmd --version']){
+  for(const command of ['ptunnel --version','ptunnel.cmd --version','ptn --version','ptn.cmd --version']){
     const result=run(command);assert.equal(result.status,0,result.stderr);assert.equal(result.stdout.trim(),version);
   }
   const bad=run('ptunnel --unknown-option');assert.equal(bad.status,1);assert.match(bad.stderr,/Unknown option/);
   const install=run('npm.cmd link --offline --ignore-scripts --no-audit --no-fund',root);
   assert.equal(install.status,0,install.stdout+install.stderr);
-  const global=run('ptunnel --version',directory);assert.equal(global.status,0,global.stdout+global.stderr);assert.equal(global.stdout.trim(),version);
+  for(const name of ['ptunnel','ptn']){
+    const global=run(`${name} --version`,directory);assert.equal(global.status,0,global.stdout+global.stderr);assert.equal(global.stdout.trim(),version);
+  }
   const help=run('ptunnel --help',root);assert.equal(help.status,0,help.stderr);assert.match(help.stdout,/http 3000/);
+  const shortHelp=run('ptn --help',directory);assert.equal(shortHelp.status,0,shortHelp.stderr);assert.match(shortHelp.stdout,/ptn http 80/);
   assert.equal(fs.existsSync(config),false,'Command lookup checks do not save or connect a user profile');
 });

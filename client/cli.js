@@ -199,6 +199,11 @@ function printHelp() {
   console.log(`
 PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
 
+  ptunnel / ptn                  ชื่อคำสั่งเดียวกัน / Same commands and saved profile
+  ptn http 80                    แชร์เว็บ / Share HTTP (after npm link)
+  ptn tcp 3389                   แชร์ TCP / Share TCP
+  ptn                            เปิดรายการล่าสุด / Resume saved tunnel
+
   node ptunnel.js                 ตั้งค่าครั้งแรก แล้วเปิด tunnel / Setup and start
                                   ครั้งถัดไปเปิดรายการเดิม / Resume saved tunnel
   node ptunnel.js setup           เปลี่ยนค่าที่บันทึก / Edit saved settings
