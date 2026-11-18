@@ -93,35 +93,134 @@ var require_server_url = __commonJS({
 var require_ui = __commonJS({
   "client/ui.js"(exports2, module2) {
     "use strict";
-    var TunnelUI = class {
-      constructor({ plain = !1, localTarget = "", tunnelType = "http", output = process.stdout } = {}) {
-        this.output = output, this.color = output.isTTY && !plain && !process.env.NO_COLOR && process.env.TERM !== "dumb", this.localTarget = localTarget, this.tunnelType = tunnelType, this.status = "connecting", this.totalConnections = 0;
+    var { stripVTControlCharacters } = require("node:util"), segmenter = new Intl.Segmenter(void 0, { granularity: "grapheme" }), HIDE_CURSOR = "\x1B[?25l", SHOW_CURSOR = "\x1B[?25h";
+    function clean(value, limit = 4096) {
+      return stripVTControlCharacters(String(value ?? "")).replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, limit);
+    }
+    function cells(grapheme) {
+      if (/^[\p{Mark}\u200d\ufe0e\ufe0f]+$/u.test(grapheme)) return 0;
+      if (/[\p{Extended_Pictographic}\p{Regional_Indicator}\ufe0f]/u.test(grapheme)) return 2;
+      let point = grapheme.codePointAt(0);
+      return point >= 4352 && (point <= 4447 || point === 9001 || point === 9002 || point >= 11904 && point <= 42191 && point !== 12351 || point >= 44032 && point <= 55203 || point >= 63744 && point <= 64255 || point >= 65040 && point <= 65135 || point >= 65281 && point <= 65376 || point >= 65504 && point <= 65510 || point >= 131072 && point <= 262141) ? 2 : [...grapheme].filter((character) => !/[\p{Mark}\u200c\u200d]/u.test(character)).length;
+    }
+    function width(text) {
+      let result = 0;
+      for (let { segment } of segmenter.segment(stripVTControlCharacters(text))) result += cells(segment);
+      return result;
+    }
+    function fit(text, columns, pad = !1) {
+      if (width(text) <= columns) return text + (pad ? " ".repeat(columns - width(text)) : "");
+      let result = "", used = 0;
+      for (let { segment } of segmenter.segment(text)) {
+        let size = cells(segment);
+        if (used + size > columns - 3) break;
+        result += segment, used += size;
       }
-      line(value, color = 36) {
-        let text = String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
-        this.output.write(this.color ? `\x1B[${color}m${text}\x1B[0m
-` : `${text}
+      return result + "...";
+    }
+    var TunnelUI = class {
+      constructor({
+        plain = !1,
+        localTarget = "",
+        tunnelType = "http",
+        output = process.stdout,
+        lifecycle = process,
+        env = process.env
+      } = {}) {
+        this.output = output, this.lifecycle = lifecycle, this.interactive = !!(output.isTTY && !plain && env.TERM !== "dumb"), this.color = !!(output.isTTY && !plain && !Object.hasOwn(env, "NO_COLOR") && env.TERM !== "dumb"), this.localTarget = clean(localTarget), this.tunnelType = tunnelType === "tcp" ? "tcp" : "http", this.status = "connecting", this.url = "", this.error = "", this.hint = "", this.requests = [], this.totalConnections = 0, this.lastLineCount = 0, this.cursorHidden = !1, this.stopped = !1, this.onExit = () => this.restoreCursor(), this.onResize = () => {
+          this.lastLineCount = 0, this.restoreCursor(), this.update(() => this.snapshot());
+        };
+      }
+      paint(text, color = 36) {
+        return this.color ? `\x1B[${color}m${text}\x1B[0m` : text;
+      }
+      line(text, color = 36) {
+        this.output.write(this.paint(clean(text), color) + `
 `);
       }
+      get columns() {
+        return Math.max(1, Math.floor(this.output.columns || 100));
+      }
+      get rows() {
+        return Math.max(1, Math.floor(this.output.rows || 24));
+      }
+      physicalRows(lines) {
+        return lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(width(line) / this.columns)), 0);
+      }
       init() {
-        this.line("PrivateTunnel · Ctrl+C to stop"), this.line(`Local: ${this.tunnelType} ${this.localTarget}`), this.line("Connecting...");
+        this.interactive && (this.output.on?.("resize", this.onResize), this.lifecycle.once("exit", this.onExit)), this.update(() => this.snapshot());
+      }
+      snapshot() {
+        this.line("PrivateTunnel · Ctrl+C to stop"), this.line(`Local: ${this.tunnelType} ${this.localTarget}`), this.status === "online" ? (this.line("ONLINE · กำลังแชร์", 32), this.line("Public address:", 32), this.line(this.url, 32)) : this.line(this.status === "connecting" ? "Connecting..." : this.status, 33), this.error && this.line(`Connection error: ${this.error}`, 31), this.hint && this.line(this.hint, 33);
+      }
+      frame() {
+        let columns = this.columns - 1, separator = this.paint("─".repeat(columns), 37), lines = [this.paint("  Private Tunnel", "1;36") + this.paint("   (Ctrl+C to quit)", 37), separator, ""], color = this.status === "online" ? 32 : this.status === "stopped" ? 37 : 33;
+        if (lines.push(`  Status:       ${this.paint((this.status === "online" ? "● " : "○ ") + this.status, color)}`), this.url) {
+          let label = this.status === "stopped" ? "Last address:" : "Forwarding:  ", type = this.tunnelType === "tcp" ? "[TCP] " : "", forwarding = `  ${label} ${type}${this.url} → ${this.localTarget}`;
+          width(forwarding) <= columns ? lines.push(`  ${label} ${this.paint(type + this.url, 32)} → ${this.localTarget}`) : (lines.push(`  ${label} ${this.tunnelType.toUpperCase()}`), lines.push(this.paint(this.url, 32)), lines.push(fit(`  Local:        ${this.localTarget}`, columns)));
+        } else lines.push(fit(`  Forwarding:   ${this.status === "stopped" ? "stopped" : this.status + "..."} → ${this.localTarget}`, columns));
+        lines.push(`  Connections:  ${this.totalConnections}`), this.error && lines.push(this.paint(fit(`  Error: ${this.error}`, columns), 31)), this.hint && lines.push(this.paint(fit(`  ${this.hint}`, columns), 33));
+        let available = this.rows - 1 - this.physicalRows(lines);
+        if (available >= 5) {
+          let pathW = columns - 2 - 9 - 8 - 9 - 3;
+          lines.push("", separator, this.paint("  " + "METHOD".padEnd(9) + " " + "PATH".padEnd(pathW) + " " + "STATUS".padEnd(8) + " TIME", 37), separator);
+          let visible = this.requests.slice(0, available - 4);
+          visible.length || lines.push("  Waiting for connections...");
+          for (let request of visible) {
+            let code = Number(request.statusCode) || 0, statusColor = request.error || code >= 500 ? 31 : code >= 400 ? 33 : code >= 300 ? 36 : 32;
+            lines.push("  " + this.paint(fit(request.method, 9, !0), "1;37") + " " + fit(request.path, pathW, !0) + " " + this.paint(fit(String(code || "-"), 8, !0), statusColor) + " " + fit(`${request.latency}ms`, 9));
+          }
+        }
+        return lines;
+      }
+      update(fallback) {
+        let lines = this.interactive && this.columns >= 60 && this.rows >= 12 ? this.frame() : null;
+        if (!lines || this.physicalRows(lines) >= this.rows) {
+          this.restoreCursor(), this.lastLineCount = 0, fallback();
+          return;
+        }
+        let out = this.cursorHidden ? "" : HIDE_CURSOR;
+        this.cursorHidden = !0, this.lastLineCount && (out += `\x1B[${this.lastLineCount}A\r\x1B[J`), this.output.write(out + lines.join(`\r
+`) + `\r
+`), this.lastLineCount = this.physicalRows(lines);
       }
       setConnected(url, localTarget, tunnelType) {
-        this.status = "online", this.url = url, this.localTarget = localTarget, this.tunnelType = tunnelType, this.line("ONLINE · กำลังแชร์", 32), this.line("Public address:", 32), this.line(url, 32), this.line(`Local: ${tunnelType} ${localTarget}`);
+        this.stopped || (this.status = "online", this.url = clean(url), this.localTarget = clean(localTarget), this.tunnelType = tunnelType === "tcp" ? "tcp" : "http", this.error = "", this.hint = "", this.update(() => {
+          this.line("ONLINE · กำลังแชร์", 32), this.line("Public address:", 32), this.line(this.url, 32), this.line(`Local: ${this.tunnelType} ${this.localTarget}`);
+        }));
       }
       setDisconnected() {
-        this.status = "reconnecting", this.line("Disconnected · กำลังเชื่อมต่อใหม่ / Reconnecting...", 33);
+        this.stopped || (this.status = "reconnecting", this.url = "", this.update(() => this.line("Disconnected · กำลังเชื่อมต่อใหม่ / Reconnecting...", 33)));
       }
-      setError(message) {
-        this.line(`Connection error: ${message}`, 31);
+      setError(message, hint = "") {
+        this.stopped || (this.error = clean(message, 2e3), this.hint = clean(hint, 500), this.update(() => {
+          this.line(`Connection error: ${this.error}`, 31), this.hint && this.line(this.hint, 33);
+        }));
       }
       addRequest(info) {
+        if (this.stopped) return;
         this.totalConnections++;
-        let text = `${(/* @__PURE__ */ new Date()).toTimeString().slice(0, 8)} ${info.method || ""} ${info.statusCode || "-"} ${info.latency || 0}ms ${info.path || "/"}`, width = Math.max(20, this.output.columns || 100);
-        this.line(text.length > width ? `${text.slice(0, width - 3)}...` : text, info.error ? 31 : 36);
+        let request = {
+          method: clean(info.method, 20),
+          path: clean(info.path || "/"),
+          statusCode: info.statusCode,
+          latency: Number.isFinite(Number(info.latency)) ? Math.max(0, Math.round(info.latency)) : 0,
+          error: !!info.error
+        };
+        if (this.requests.unshift(request), this.requests.length = Math.min(this.requests.length, 50), this.interactive && this.columns >= 60 && this.rows >= 12)
+          this.pendingRender || (this.pendingRender = setImmediate(() => {
+            this.pendingRender = null, this.update(() => this.snapshot());
+          })), this.pendingRender?.unref?.();
+        else {
+          let time = (/* @__PURE__ */ new Date()).toTimeString().slice(0, 8);
+          this.line(fit(`${time} ${request.method} ${request.statusCode || "-"} ${request.latency}ms ${request.path}`, Math.max(20, this.columns)), request.error ? 31 : 36);
+        }
+      }
+      restoreCursor() {
+        this.cursorHidden && (this.output.write(SHOW_CURSOR), this.cursorHidden = !1);
       }
       stop() {
-        this.status = "stopped", this.line("Stopped · หยุดแชร์แล้ว");
+        this.stopped || (this.stopped = !0, this.status = "stopped", clearImmediate(this.pendingRender), this.pendingRender = null, this.update(() => this.line("Stopped · หยุดแชร์แล้ว")), this.restoreCursor(), this.output.removeListener?.("resize", this.onResize), this.lifecycle.removeListener("exit", this.onExit));
       }
     };
     module2.exports = TunnelUI;
@@ -510,7 +609,7 @@ var require_package = __commonJS({
   "package.json"(exports2, module2) {
     module2.exports = {
       name: "privatetunnel",
-      version: "1.4.3",
+      version: "1.4.4",
       description: "ngrok-like tunnel system - expose local servers to the internet",
       author: "Jindanet",
       license: "MIT",
@@ -3995,7 +4094,7 @@ PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
   node ptunnel.js reset           ล้างการตั้งค่า / Clear saved settings
   node ptunnel.js init --server admin.example.com --token YOUR_ACCESS_KEY
 
-  --plain                        Plain logs without terminal colors
+  --plain                        Line-by-line logs without dashboard or colors
   --version                      Show the client release version
   Config: ${configPath()}
   Ctrl+C to stop. Open your local service before starting a tunnel.
@@ -4010,7 +4109,7 @@ PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
         onDisconnected: () => ui.setDisconnected(),
         onRequest: (info) => ui.addRequest(info),
         onError: (error) => {
-          ui.setError(error.message), ["EUNAUTHORIZED", "ETUNNELSETUP"].includes(error.code) && (error.code === "EUNAUTHORIZED" && console.error("Run node ptunnel.js setup to update the access key."), stop(1));
+          ui.setError(error.message, error.code === "EUNAUTHORIZED" ? "Run node ptunnel.js setup to update the access key." : ""), ["EUNAUTHORIZED", "ETUNNELSETUP"].includes(error.code) && stop(1);
         }
       }), stopping = !1;
       function stop(code = 0) {
