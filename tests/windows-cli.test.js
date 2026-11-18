@@ -30,7 +30,7 @@ test('CMD runs Node from the source folder and the isolated npm link instead of 
   });
   const resolution=run('where.exe ptunnel');
   assert.equal(resolution.status,0,resolution.stderr);
-  assert.equal(resolution.stdout.trim().split(/\r?\n/)[0].toLowerCase(),path.join(source,'ptunnel.cmd').toLowerCase());
+  assert.equal(fs.realpathSync(resolution.stdout.trim().split(/\r?\n/)[0]).toLowerCase(),fs.realpathSync(path.join(source,'ptunnel.cmd')).toLowerCase());
   const version=require('../package.json').version;
   for(const command of ['ptunnel --version','ptunnel.cmd --version']){
     const result=run(command);assert.equal(result.status,0,result.stderr);assert.equal(result.stdout.trim(),version);

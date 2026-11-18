@@ -54,17 +54,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ github.sha }}
           TARGET_BRANCH: ${{ github.ref_name }}
-        run: |
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          cp "$RUNNER_TEMP/standalone-client/ptunnel.js" ptunnel.js
-          cp "$RUNNER_TEMP/terminal-previews/terminal-dashboard.png" docs/images/terminal-dashboard.png
-          cp "$RUNNER_TEMP/terminal-previews/terminal-compact.png" docs/images/terminal-compact.png
-          if git diff --quiet -- ptunnel.js docs/images/terminal-dashboard.png docs/images/terminal-compact.png && test -z "$(git ls-files --others --exclude-standard docs/images/terminal-dashboard.png docs/images/terminal-compact.png)"; then exit 0; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- ptunnel.js docs/images/terminal-dashboard.png docs/images/terminal-compact.png
-          git commit -m 'build: synchronize the client and terminal previews from CI'
-          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+        run: node .github/scripts/sync-standalone.mjs
   firmware:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
