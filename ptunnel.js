@@ -3613,14 +3613,14 @@ var require_tunnel_client = __commonJS({
       _handleControlMessage(msg) {
         if (!(!msg || typeof msg != "object" || Array.isArray(msg))) {
           if (msg.type === MSG.TUNNEL_ASSIGNED) {
-            let version = msg.dataTransportVersion == null ? 1 : msg.dataTransportVersion;
-            if (this.dataTransportSelected && version !== this.dataTransportVersion || version !== 1 && (version !== DATA_TRANSPORT_VERSION || !this.dataTransportVersions.includes(version))) {
+            let version = msg.dataTransportVersion == null ? 1 : msg.dataTransportVersion, resetAck = version === DATA_TRANSPORT_VERSION && this.tcpResetAck && msg.tcpResetAck === !0;
+            if (this.dataTransportSelected && version !== this.dataTransportVersion || this.dataTransportSelected && resetAck !== supportsTcpResetAck(this.ws) || version !== 1 && (version !== DATA_TRANSPORT_VERSION || !this.dataTransportVersions.includes(version))) {
               this.shouldReconnect = !1, this.ws.close(1002, "Unsupported data transport"), this.onError(new Error("Server selected an unsupported data transport."));
               return;
             }
             version === DATA_TRANSPORT_VERSION && selectTransport(this.ws, version, {
               isServer: !1,
-              tcpResetAck: this.tcpResetAck && msg.tcpResetAck === !0
+              tcpResetAck: resetAck
             }), this.dataTransportVersion = version, this.dataTransportSelected = !0;
           }
           if (receiveControl(this.ws, msg))
