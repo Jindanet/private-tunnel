@@ -89,7 +89,7 @@ function readable() {
   return source;
 }
 
-function pair(t, { selected = true, clientDestination, serverDestination } = {}) {
+function pair(t, { selected = true, clientDestination, serverDestination, tcpResetAck = false } = {}) {
   const server = new FakeWebSocket();
   const client = new FakeWebSocket();
   server.peer = client;
@@ -115,7 +115,7 @@ function pair(t, { selected = true, clientDestination, serverDestination } = {})
         protocol.receiveControl(ws, control);
       }
     });
-    if (selected) protocol.selectTransport(ws, 4, { isServer });
+    if (selected) protocol.selectTransport(ws, 4, { isServer, tcpResetAck });
   }
   t.after(() => {
     protocol.disposeTransport(server);
@@ -497,6 +497,32 @@ test('cancelled streams release queues and tolerate late write callbacks without
   await startTcp(server, client, healthyId);
   assert.equal(protocol.sendData(server, FRAME_TCP_DATA, healthyId, Buffer.from('healthy')), true);
   await eventually(() => client.frames.some((frame) => frame.requestId === healthyId), 'other streams survive cancellation');
+});
+
+test('late data for a cancelled TCP connection cannot close another live connection after churn',async(t)=>{
+  const {server,client}=pair(t,{tcpResetAck:true});
+  const live=id(6000),cancelled=id(6001);
+  await startTcp(server,client,live);await startTcp(server,client,cancelled);
+  const delayed=[],send=client.send.bind(client);
+  client.send=(...args)=>delayed.push(args); // Delay only client-to-server traffic, preserving FIFO.
+  assert.equal(protocol.sendData(server,FRAME_TCP_DATA,cancelled,Buffer.from('already queued before cancellation')),true);
+  protocol.cancelStream(client,cancelled);
+  // Control messages can pass queued data before its scheduled flush. More
+  // short-lived connections must not evict a reset whose peer is still sending.
+  for(let index=0;index<140;index++){
+    const next=id(6100+index);
+    assert.equal(protocol.sendControl(server,{type:MSG.TCP_CONNECT,connId:next}),true);
+    assert.equal(protocol.sendControl(server,{type:MSG.TCP_CLOSE,connId:next}),true);
+  }
+  const payload=randomBytes(32768);
+  assert.equal(protocol.sendData(server,FRAME_TCP_DATA,live,payload),true);
+  await settle();
+  assert.equal(client.terminated,false,'Late bytes from an unrelated cancelled stream must not terminate the shared WebSocket');
+  assert.deepEqual(Buffer.concat(client.frames.filter((frame)=>frame.requestId===live).map((frame)=>frame.data)),payload);
+  client.send=send;for(const args of delayed)send(...args);
+  await settle();
+  assert.equal(server.terminated,false);assert.equal(client.terminated,false);
+  assert.equal(protocol.getTransportStats(server).sentOutstandingBytes,0);
 });
 
 test('WebSocket close disposes paused sources and suppresses late write credit', async (t) => {
