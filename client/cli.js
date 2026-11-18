@@ -216,7 +216,7 @@ PrivateTunnel ${CLIENT_VERSION} · Termux / Node.js 22.12+
   node ptunnel.js reset           ล้างการตั้งค่า / Clear saved settings
   node ptunnel.js init --server admin.example.com --token YOUR_ACCESS_KEY
 
-  --plain                        Plain logs without terminal colors
+  --plain                        Line-by-line logs without dashboard or colors
   --version                      Show the client release version
   Config: ${configPath()}
   Ctrl+C to stop. Open your local service before starting a tunnel.
@@ -234,9 +234,8 @@ function startTunnel(config, profile, options) {
     onDisconnected: () => ui.setDisconnected(),
     onRequest: (info) => ui.addRequest(info),
     onError: (error) => {
-      ui.setError(error.message);
+      ui.setError(error.message, error.code === 'EUNAUTHORIZED' ? 'Run node ptunnel.js setup to update the access key.' : '');
       if (['EUNAUTHORIZED', 'ETUNNELSETUP'].includes(error.code)) {
-        if (error.code === 'EUNAUTHORIZED') console.error('Run node ptunnel.js setup to update the access key.');
         stop(1);
       }
     },

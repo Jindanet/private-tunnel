@@ -31,8 +31,8 @@ jobs:
   sync-standalone:
     # Opt-in only: build on GitHub when local application execution is unwanted.
     # The read-only test/build jobs never receive this job's write permission.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/codex/') && contains(github.event.head_commit.message, '[sync standalone]')
-    needs: standalone
+    if: always() && needs.standalone.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/codex/') && contains(github.event.head_commit.message, '[sync standalone]')
+    needs: [standalone, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -46,18 +46,24 @@ jobs:
         with:
           name: standalone-client
           path: ${{ runner.temp }}/standalone-client
-      - name: Commit only the generated standalone client
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: terminal-previews
+          path: ${{ runner.temp }}/terminal-previews
+      - name: Commit the generated client and terminal previews
         env:
           SOURCE_SHA: ${{ github.sha }}
           TARGET_BRANCH: ${{ github.ref_name }}
         run: |
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           cp "$RUNNER_TEMP/standalone-client/ptunnel.js" ptunnel.js
-          if git diff --quiet -- ptunnel.js; then exit 0; fi
+          cp "$RUNNER_TEMP/terminal-previews/terminal-dashboard.png" docs/images/terminal-dashboard.png
+          cp "$RUNNER_TEMP/terminal-previews/terminal-compact.png" docs/images/terminal-compact.png
+          if git diff --quiet -- ptunnel.js docs/images/terminal-dashboard.png docs/images/terminal-compact.png && test -z "$(git ls-files --others --exclude-standard docs/images/terminal-dashboard.png docs/images/terminal-compact.png)"; then exit 0; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- ptunnel.js
-          git commit -m 'build: synchronize the CI-generated standalone client'
+          git add -- ptunnel.js docs/images/terminal-dashboard.png docs/images/terminal-compact.png
+          git commit -m 'build: synchronize the client and terminal previews from CI'
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
   firmware:
     runs-on: ubuntu-24.04
@@ -135,12 +141,20 @@ jobs:
         if: runner.os == 'Linux'
         env:
           PT_ADMIN_CAPTURE_DIR: ${{ runner.temp }}/ptunnel-admin-previews
+          PT_TERMINAL_CAPTURE_DIR: ${{ matrix.node == 22 && format('{0}/ptunnel-terminal-previews', runner.temp) || '' }}
         run: xvfb-run --auto-servernum npm test -- --test-reporter=tap 2>&1 | tee "$RUNNER_TEMP/ptunnel-tests.log"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: runner.os == 'Linux' && matrix.node == 22
         with:
           name: device-login-previews
           path: ${{ runner.temp }}/ptunnel-admin-previews/admin-device-access-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: runner.os == 'Linux' && matrix.node == 22
+        with:
+          name: terminal-previews
+          path: ${{ runner.temp }}/ptunnel-terminal-previews/*.png
           if-no-files-found: error
           retention-days: 7
       - name: Run tests on Windows

@@ -4,6 +4,16 @@
 
 The standalone `ptunnel.js` needs only Node.js **22.12+**. Native CLI downloads expose the same commands; replace `node ptunnel.js` with the downloaded executable or `ptunnel` if it is on PATH.
 
+Interactive terminals at least 60 columns wide and 12 rows tall show the live dashboard: status, forwarding address, connection count and recent requests. Narrow Termux screens, redirected output and `--plain` use line-by-line logs. Public addresses remain complete in both modes. Ctrl+C stops sharing and restores the terminal cursor.
+
+![Terminal dashboard with an example address](../images/terminal-dashboard.png)
+
+The preview uses example requests and is captured from the CLI renderer on GitHub Actions. A more compact terminal keeps the same layout:
+
+![Compact terminal dashboard with an example address](../images/terminal-compact.png)
+
+On Windows CMD, the source folder includes `ptunnel.cmd` so `ptunnel 80` and `ptunnel http 80` run through Node.js. Without that launcher, CMD can find the local `ptunnel.js` before the command installed by `npm link` and invoke Windows Script Host. You can always use `node ptunnel.js http 80`, or explicitly call `ptunnel.cmd http 80`. Run `npm link` once from the checkout to make the command available from other folders. This project is not a Python module.
+
 ```bash
 node ptunnel.js
 node ptunnel.js setup
