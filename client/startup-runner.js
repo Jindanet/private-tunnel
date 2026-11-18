@@ -77,7 +77,10 @@ function runStartup(profilePath, { Client = TunnelClient, intervalMs = 3000, boo
   }
   function update(next) { state = { ...state, ...next }; save(); log(`${state.status} ${state.error || state.url}`); }
   const client = new Client({ ...profile,
-    onConnected: ({ url, dataTransportVersion }) => { if (!stopped) update({ status: 'online', url: clean(url), error: null, dataTransportVersion }); },
+    onConnected: ({ url, dataTransportVersion, tcpResetAck }) => { if (!stopped) {
+      update({ status: 'online', url: clean(url), error: null, dataTransportVersion, tcpResetAck });
+      log(`transport=${dataTransportVersion} tcp-reset-ack=${tcpResetAck ? 'on' : 'off (peer does not support it)'}`);
+    } },
     onDiagnostic: log,
     onDisconnected: (info) => { if (!stopped) update({ status: 'reconnecting', url: '', error: clean(info?.message || 'Tunnel connection closed; reconnecting.') }); },
     onError: (error) => {

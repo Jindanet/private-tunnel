@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.5 — 2026-11-18
+
+- Fix a TCP cancellation race reproduced on Windows CI: late data for a cancelled stream could outlive its bounded tombstone and close the shared tunnel. Negotiate a TCP reset acknowledgement before retiring cancelled records; retain bounded queues, credits and admission limits, with the existing wire behavior for older peers.
+- Log server TCP close reasons, matching connection IDs and byte counts. Record client WebSocket error codes, connection duration and active TCP count, and show whether the installed boot worker negotiated reset acknowledgements. Do not log traffic payloads or keys.
+- Cover delayed cancellation with connection churn, crossed resets, record reclamation, bounded pending acknowledgements and capability compatibility. Keep the duplex/idle transport checks; these do not certify real Windows RDP sessions or identify every abnormal WebSocket disconnect.
+
 ## 1.4.4 — 2026-11-18
 
 - Restore the live terminal dashboard on interactive consoles. Keep narrow terminals, redirected output and `--plain` readable, with complete public addresses, bounded request history and cursor restoration.

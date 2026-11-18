@@ -30,6 +30,26 @@ If local-IP RDP works but the tunnel drops, record the idle duration, whether Pr
 
 For a boot tunnel, check the worker's version in `startup status` or the first `worker version=` line in its `service.log`. New logs include WebSocket close codes and TCP close reasons/byte counts; collect the lines at the disconnect time together with the server's `Tunnel closed` line. These distinguish a lost tunnel from a local TCP reset. The integration suite checks simultaneous binary traffic in both directions, an idle period spanning two heartbeat cycles, and intact traffic afterward; this is transport coverage, not a test of a real Windows RDP session.
 
+In 1.4.5 I fixed a cancellation race reproduced by the Windows transport tests. A cancelled connection could lose its retained receive state while the peer still had data in flight. Both endpoints now advertise `tcpResetAck: true` with v4 negotiation. `tcp:close` cancels queued data, and `tcp:reset-ack` marks the ordered end of that connection's in-flight traffic. A locally cancelled record cannot retire before this acknowledgement. The record and credit limits remain bounded. Old peers keep the previous behavior, so update the server, client and installed boot worker together. Look for `tcp-reset-ack=on` in the worker log. This regression test does not establish that every RDP `0x1104` has the same cause.
+
+Read the log on the machine running **PrivateTunnel client and sharing port 3389**. The computer running the Remote Desktop viewer is a different role. On Windows, this read-only command finds the latest boot worker log:
+
+```powershell
+Get-ChildItem "$env:ProgramData\PrivateTunnel\startup" -Recurse -File -Filter service.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName; Get-Content -LiteralPath $_.FullName -Tail 40 }
+```
+
+If several boot jobs exist, check that the file belongs to the affected target. A normal interactive GUI/CLI tunnel does not create this startup log. No output means no matching readable file was found; it does not confirm that the client is running. Never send `profile.json` or access keys.
+
+| Log event | Meaning |
+| --- | --- |
+| `worker version=...` | Version of the installed worker copy, independent of the open GUI's version. |
+| `Tunnel WebSocket closed (code 1006)` | The control/data connection ended without a received WebSocket Close frame. All TCP sessions on that tunnel end. This alone does not identify the server, proxy, network or client as the cause. |
+| Client `TCP ID closed: remote reset` | The server sent cancellation for this TCP connection. Match its ID with the server log; it does not by itself prove an RDP protocol defect. |
+| Server `[TCP] ... ID closed: ...` | The corresponding visitor-side close, error or configured timeout, with byte counts and duration. |
+| `ECONNRESET` | That local TCP socket was reset. Check which endpoint logged it and the corresponding connection ID. |
+
+Record the error time and timezone, then collect the matching lines from both sides. Old abnormal closes from earlier days do not explain a new screenshot. A short-lived negotiation connection may close even while the main RDP session works. [WebSocket close-code definition](https://www.rfc-editor.org/rfc/rfc6455.html#section-7.1.5).
+
 ## Device-specific checks
 
 | Symptom | Check |

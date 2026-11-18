@@ -518,11 +518,90 @@ test('late data for a cancelled TCP connection cannot close another live connect
   assert.equal(protocol.sendData(server,FRAME_TCP_DATA,live,payload),true);
   await settle();
   assert.equal(client.terminated,false,'Late bytes from an unrelated cancelled stream must not terminate the shared WebSocket');
+  assert.equal(dataSent(server,cancelled).length,1,'The cancelled stream really has late data on the wire');
+  assert.equal(client.controls.filter((msg)=>msg.type===MSG.TCP_CLOSE).length,140);
+  assert.ok(protocol.selectTransport(client,4,{tcpResetAck:true}).records.has(cancelled),'An unacknowledged reset stays active despite tombstone churn');
   assert.deepEqual(Buffer.concat(client.frames.filter((frame)=>frame.requestId===live).map((frame)=>frame.data)),payload);
   client.send=send;for(const args of delayed)send(...args);
   await settle();
   assert.equal(server.terminated,false);assert.equal(client.terminated,false);
   assert.equal(protocol.getTransportStats(server).sentOutstandingBytes,0);
+});
+
+test('negotiated TCP reset barriers work in both directions and release bounded records', async(t)=>{
+  for (const locallyCancelled of ['server','client']) {
+    const peers=pair(t,{tcpResetAck:true});
+    const from=peers[locallyCancelled], to=peers[locallyCancelled==='server'?'client':'server'];
+    for(let index=0;index<MAX_RECORDS+32;index++) {
+      const streamId=id(7000+index);
+      await startTcp(peers.server,peers.client,streamId);
+      protocol.cancelStream(from,streamId);
+      await settle();
+      assert.equal(to.controls.filter((msg)=>msg.type===MSG.TCP_CLOSE&&msg.connId===streamId).length,1);
+      assert.equal(from.controls.filter((msg)=>msg.type===protocol.TCP_RESET_ACK&&msg.connId===streamId).length,1);
+      for(const ws of [from,to]) {
+        const state=protocol.selectTransport(ws,4,{isServer:ws===peers.server,tcpResetAck:true});
+        assert.equal(state.records.size,0,'A completed barrier leaves no active record');
+        assert.ok(state.tombstones.size<=128);
+        assert.equal(ws.terminated,false);
+      }
+    }
+  }
+});
+
+test('crossed TCP resets acknowledge once without an echo loop',async(t)=>{
+  const {server,client}=pair(t,{tcpResetAck:true});
+  const streamId=id(7400);
+  await startTcp(server,client,streamId);
+  protocol.cancelStream(server,streamId);
+  protocol.cancelStream(client,streamId);
+  await settle();
+  for(const ws of [server,client]) {
+    assert.equal(ws.controls.filter((msg)=>msg.type===MSG.TCP_CLOSE).length,1);
+    assert.equal(ws.controls.filter((msg)=>msg.type===protocol.TCP_RESET_ACK).length,1);
+    assert.equal(protocol.selectTransport(ws,4,{isServer:ws===server,tcpResetAck:true}).records.size,0);
+    assert.equal(ws.terminated,false);
+  }
+});
+
+test('unacknowledged TCP resets remain bounded and reject admission without closing the tunnel',async(t)=>{
+  const {server,client}=pair(t,{tcpResetAck:true});
+  const live=id(7800);
+  await startTcp(server,client,live);
+  const delayed=[],send=client.send.bind(client);
+  client.send=(...args)=>delayed.push(args);
+  for(let index=0;index<MAX_RECORDS-1;index++) {
+    const streamId=id(8000+index);
+    await startTcp(server,client,streamId);
+    protocol.cancelStream(server,streamId);
+    await settle();
+  }
+  const state=protocol.selectTransport(server,4,{isServer:true,tcpResetAck:true});
+  assert.equal(state.records.size,MAX_RECORDS);
+  assert.equal(protocol.sendControl(server,{type:MSG.TCP_CONNECT,connId:id(8500)}),false);
+  const payload=Buffer.from('the existing TCP stream still works');
+  assert.equal(protocol.sendData(server,FRAME_TCP_DATA,live,payload),true);
+  await settle();
+  assert.deepEqual(Buffer.concat(client.frames.filter((frame)=>frame.requestId===live).map((frame)=>frame.data)),payload);
+  client.send=send;for(const args of delayed)send(...args);
+  await settle();
+  assert.equal(state.records.size,1);
+  assert.equal(server.terminated,false);assert.equal(client.terminated,false);
+});
+
+test('reset acknowledgements are absent on legacy v4 and unsolicited ACKs fail closed',async(t)=>{
+  const legacy=pair(t);
+  const streamId=id(7500);
+  await startTcp(legacy.server,legacy.client,streamId);
+  protocol.cancelStream(legacy.client,streamId);
+  await settle();
+  assert.equal(protocol.supportsTcpResetAck(legacy.client),false);
+  assert.equal(legacy.client.controls.some((msg)=>msg.type===protocol.TCP_RESET_ACK),false);
+  assert.equal(legacy.server.terminated,false);
+  const modern=pair(t,{tcpResetAck:true});
+  await startTcp(modern.server,modern.client,streamId);
+  assert.equal(protocol.receiveControl(modern.client,{type:protocol.TCP_RESET_ACK,connId:streamId}),false);
+  assert.equal(modern.client.terminated,true);
 });
 
 test('WebSocket close disposes paused sources and suppresses late write credit', async (t) => {

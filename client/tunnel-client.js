@@ -2,7 +2,7 @@ const WebSocket = require('ws');
 const net = require('node:net');
 const os = require('node:os');
 const { MSG, PROTOCOL_VERSION, DATA_TRANSPORT_VERSION, TCP_END, FRAME_REQUEST_BODY, FRAME_RESPONSE_BODY, FRAME_TCP_DATA,
-  selectTransport, getTransportVersion, receiveControl, decodeDataFrame, sendControl, sendData, writeFrame, discardFrame, cancelStream } = require('../shared/tunnel-v4');
+  selectTransport, getTransportVersion, supportsTcpResetAck, receiveControl, decodeDataFrame, sendControl, sendData, writeFrame, discardFrame, cancelStream } = require('../shared/tunnel-v4');
 const { createForwardRequest } = require('./local-forwarder');
 const { requireSecureServerWebSocketUrl } = require('./server-url');
 
@@ -21,6 +21,7 @@ class TunnelClient {
       ? options.dataTransportVersions.filter((value) => value === 1 || value === DATA_TRANSPORT_VERSION)
       : [DATA_TRANSPORT_VERSION, 1];
     this.dataTransportVersion = 1;
+    this.tcpResetAck = options.tcpResetAck !== false;
     this.dataTransportSelected = false;
     this.ws = null;
     this.subdomain = null;
@@ -62,6 +63,7 @@ class TunnelClient {
       maxPayload: 1024 * 1024,
       perMessageDeflate: false,
     });
+    const connectedAt = Date.now();
 
     this.ws.on('open', () => {
       if (this.ws !== ws) return;
@@ -73,6 +75,7 @@ class TunnelClient {
         type: MSG.TUNNEL_OPEN,
         protocolVersion: PROTOCOL_VERSION,
         dataTransportVersions: this.dataTransportVersions,
+        tcpResetAck: this.tcpResetAck,
         tunnelType: this.tunnelType,
         localPort: this.localPort,
         clientId: this.clientId,
@@ -104,6 +107,7 @@ class TunnelClient {
       clearTimeout(this.serverSilenceTimer);
       this.serverSilenceTimer = null;
       this.connected = false;
+      const activeTcp = this.tcpSockets.size;
       this._clearRequestStreams(new Error('Tunnel WebSocket closed'));
       this._clearTcpSockets();
       if (code === 4001) {
@@ -113,7 +117,8 @@ class TunnelClient {
         return;
       }
       if (this.shouldReconnect) {
-        const message = ws.tunnelFailure || `Tunnel WebSocket closed (code ${code}); active TCP sessions were closed.`;
+        const cause = ws.tunnelFailure || 'WebSocket closed without a local failure reason';
+        const message = `Tunnel WebSocket closed (code ${code}); ${cause}; uptime=${Math.round((Date.now() - connectedAt) / 1000)}s activeTCP=${activeTcp} transport=${this.dataTransportVersion}; active TCP sessions were closed.`;
         this.onDiagnostic(message);
         this.onDisconnected({ code, message });
         this._reconnect();
@@ -122,6 +127,7 @@ class TunnelClient {
 
     this.ws.on('error', (err) => {
       if (this.ws !== ws) return;
+      this.onDiagnostic(`Tunnel WebSocket error: ${/^[A-Z0-9_]{1,64}$/.test(err.code || '') ? err.code : 'WebSocket error'}`);
       if (err.message && /Unexpected server response: 401/.test(err.message)) {
         this.shouldReconnect = false;
         err.code = 'EUNAUTHORIZED';
@@ -141,7 +147,8 @@ class TunnelClient {
         this.onError(new Error('Server selected an unsupported data transport.'));
         return;
       }
-      if (version === DATA_TRANSPORT_VERSION) selectTransport(this.ws, version, { isServer: false });
+      if (version === DATA_TRANSPORT_VERSION) selectTransport(this.ws, version, { isServer: false,
+        tcpResetAck: this.tcpResetAck && msg.tcpResetAck === true });
       this.dataTransportVersion = version;
       this.dataTransportSelected = true;
     }
@@ -159,6 +166,7 @@ class TunnelClient {
           url: msg.url,
           tunnelType: msg.tunnelType,
           dataTransportVersion: this.dataTransportVersion,
+          tcpResetAck: supportsTcpResetAck(this.ws),
         });
         break;
 
@@ -253,7 +261,7 @@ class TunnelClient {
 
     sock.on('close', (hadError) => {
       this.tcpSockets.delete(connId);
-      this.onDiagnostic(`TCP ${connId} closed: ${socketError || (sock._tunnelRemoteReset ? 'remote reset' : hadError ? 'socket error' : 'socket closed')}; read=${sock.bytesRead || 0} written=${sock.bytesWritten || 0} eof=${Boolean(sock.readableEnded)} finished=${Boolean(sock.writableFinished)}`);
+      this.onDiagnostic(`TCP ${connId} closed: ${socketError || (sock._tunnelRemoteReset ? 'remote reset' : sock._tunnelDisconnected ? 'tunnel disconnected' : hadError ? 'socket error' : 'socket closed')}; read=${sock.bytesRead || 0} written=${sock.bytesWritten || 0} eof=${Boolean(sock.readableEnded)} finished=${Boolean(sock.writableFinished)}`);
       if (!sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished)
         && this.ws && this.ws.readyState === this.ws.OPEN) {
         sendControl(this.ws, { type: MSG.TCP_CLOSE, connId });
@@ -418,6 +426,7 @@ class TunnelClient {
 
   _clearTcpSockets() {
     for (const [connId, sock] of this.tcpSockets) {
+      sock._tunnelDisconnected = true;
       cancelStream(this.ws, connId);
       sock.destroy();
     }

@@ -6,6 +6,7 @@ const base = require('./protocol');
 
 const DATA_TRANSPORT_VERSION = 4;
 const TCP_END = 'tcp:end';
+const TCP_RESET_ACK = 'tcp:reset-ack';
 const WINDOW = 128 * 1024;
 const CONNECTION_WINDOW = 1024 * 1024;
 const MAX_FRAME_BYTES = 32 * 1024;
@@ -26,7 +27,7 @@ const MAX_TOMBSTONES = 128;
 const CREDIT = 0x44;
 const FRAME_TOKEN = Symbol('v4 received frame');
 const transports = new WeakMap();
-const VALID_CONTROL_TYPES = new Set([...Object.values(base.MSG), TCP_END]);
+const VALID_CONTROL_TYPES = new Set([...Object.values(base.MSG), TCP_END, TCP_RESET_ACK]);
 
 function idOf(value) {
   return typeof value === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value)
@@ -41,17 +42,18 @@ function open(state) {
   return !state.closed && state.ws.readyState === state.ws.OPEN;
 }
 
-function selectTransport(ws, version, { isServer = false } = {}) {
+function selectTransport(ws, version, { isServer = false, tcpResetAck = false } = {}) {
   if (version !== DATA_TRANSPORT_VERSION) throw new RangeError('Unsupported data transport version');
   if (!ws || typeof ws.send !== 'function') throw new TypeError('A WebSocket is required');
   const existing = current(ws);
   if (existing) {
     if (existing.closed) throw new Error('The selected transport has been disposed');
     if (existing.isServer !== Boolean(isServer)) throw new Error('Transport role cannot change');
+    if (existing.tcpResetAck !== Boolean(tcpResetAck)) throw new Error('Transport capabilities cannot change');
     return existing;
   }
   const state = {
-    ws, isServer: Boolean(isServer), closed: false,
+    ws, isServer: Boolean(isServer), tcpResetAck: Boolean(tcpResetAck), closed: false,
     records: new Map(), tombstones: new Map(), ready: [], controls: [],
     queuedBytes: 0, queuedChunks: 0, controlQueuedBytes: 0,
     // Outstanding counters use credit units (payload + per-frame overhead).
@@ -72,6 +74,10 @@ function selectTransport(ws, version, { isServer = false } = {}) {
 
 function getTransportVersion(ws) {
   return current(ws) ? DATA_TRANSPORT_VERSION : base.PROTOCOL_VERSION;
+}
+
+function supportsTcpResetAck(ws) {
+  return Boolean(current(ws)?.tcpResetAck);
 }
 
 function fail(state, reason = 'Invalid v4 transport') {
@@ -105,6 +111,8 @@ function makeRecord(state, id, kind, locallyOpened) {
     id, idBytes: base.uuidToBytes(id), kind, locallyOpened,
     startedOnWire: !locallyOpened, localEnded: false, localEndSent: false,
     remoteEnded: false, reset: false, tombstone: false,
+    localResetSent: false, remoteResetSeen: false, resetAckReceived: false,
+    resetAckQueued: false, resetAckSent: false,
     queue: [], queuedBytes: 0, sentOutstanding: 0, receivedOutstanding: 0,
     controlPending: 0, ready: false, sources: new Set(), tokens: new Set(), sinks: new Map(),
   };
@@ -121,6 +129,11 @@ function retire(state, record) {
   if (state.closed || record.tombstone || record.queuedBytes || record.sentOutstanding
     || record.receivedOutstanding || record.controlPending) return;
   if (!record.reset && !(record.localEndSent && record.remoteEnded)) return;
+  // A reset can cross data already queued by the peer. Keep its receive window
+  // until the peer's ACK proves that all earlier data has arrived in WS order.
+  if (state.tcpResetAck && record.kind === 'tcp'
+    && ((record.localResetSent && !record.resetAckReceived)
+      || (record.remoteResetSeen && !record.resetAckSent))) return;
   state.records.delete(record.id);
   record.tombstone = true;
   record.sources.clear();
@@ -140,6 +153,7 @@ function sentControl(state, entry) {
   entry.record.controlPending--;
   if (entry.kind === 'start') entry.record.startedOnWire = true;
   if (entry.kind === 'end') entry.record.localEndSent = true;
+  if (entry.kind === 'reset-ack') entry.record.resetAckSent = true;
   ready(state, entry.record);
   retire(state, entry.record);
 }
@@ -330,6 +344,8 @@ function releaseToken(token) {
 
 function cancel(state, record, notify = false) {
   if (!record || record.reset || state.closed) return;
+  const sendReset = notify && (record.startedOnWire || !record.locallyOpened);
+  if (sendReset && state.tcpResetAck && record.kind === 'tcp') record.localResetSent = true;
   record.reset = true;
   record.localEnded = record.remoteEnded = true;
   state.queuedBytes -= record.queuedBytes;
@@ -340,7 +356,7 @@ function cancel(state, record, notify = false) {
   state.ready = state.ready.filter((entry) => entry !== record);
   dropControls(state, record);
   for (const token of [...record.tokens]) releaseToken(token);
-  if (notify && (record.startedOnWire || !record.locallyOpened)) {
+  if (sendReset) {
     const msg = record.kind === 'tcp'
       ? { type: base.MSG.TCP_CLOSE, connId: record.id }
       : { type: base.MSG.STREAM_ERROR, requestId: record.id, message: 'Tunnel stream cancelled' };
@@ -360,16 +376,35 @@ function observeControl(state, msg, outgoing) {
     const record = makeRecord(state, id, type === base.MSG.TCP_CONNECT ? 'tcp' : 'http', outgoing);
     return record ? { record, kind: 'start' } : null;
   }
-  const isTcp = type === base.MSG.TCP_CLOSE || type === TCP_END;
-  if (![base.MSG.RESPONSE_START, base.MSG.STREAM_END, base.MSG.STREAM_ERROR, base.MSG.TCP_CLOSE, TCP_END].includes(type)) return {};
+  const isTcp = type === base.MSG.TCP_CLOSE || type === TCP_END || type === TCP_RESET_ACK;
+  if (type === TCP_RESET_ACK && (!state.tcpResetAck || outgoing)) return null;
+  if (![base.MSG.RESPONSE_START, base.MSG.STREAM_END, base.MSG.STREAM_ERROR, base.MSG.TCP_CLOSE, TCP_END, TCP_RESET_ACK].includes(type)) return {};
   const id = idOf(isTcp ? msg.connId : msg.requestId);
   if (!id) return null;
   const record = findRecord(state, id);
   // Cancellation and duplicate terminal messages can cross in flight.
   if (!record) return type === base.MSG.RESPONSE_START ? null : { ignored: true };
   if (record.kind !== (isTcp ? 'tcp' : 'http')) return null;
+  if (type === TCP_RESET_ACK) {
+    if (!record.reset || !record.localResetSent) return null;
+    record.resetAckReceived = true;
+    retire(state, record);
+    return { ignored: true };
+  }
   if (type === base.MSG.STREAM_ERROR || type === base.MSG.TCP_CLOSE) {
+    if (state.tcpResetAck && record.kind === 'tcp') {
+      if (outgoing) {
+        if (record.reset) return { ignored: true };
+        record.localResetSent = true;
+      } else {
+        record.remoteResetSeen = true;
+      }
+    }
     cancel(state, record);
+    if (!outgoing && state.tcpResetAck && record.kind === 'tcp' && !record.resetAckQueued) {
+      record.resetAckQueued = true;
+      queueControl(state, JSON.stringify({type: TCP_RESET_ACK, connId: record.id}), record, 'reset-ack');
+    }
     return { record, kind: 'reset' };
   }
   if (record.reset || record.tombstone) return { ignored: true };
@@ -595,10 +630,10 @@ function getTransportStats(ws) {
 }
 
 module.exports = {
-  ...base, DATA_TRANSPORT_VERSION, TCP_END, WINDOW, CONNECTION_WINDOW,
+  ...base, DATA_TRANSPORT_VERSION, TCP_END, TCP_RESET_ACK, WINDOW, CONNECTION_WINDOW,
   MAX_FRAME_BYTES, FRAME_CREDIT_OVERHEAD, MAX_STREAM_QUEUE_BYTES, MAX_TOTAL_QUEUE_BYTES,
   STREAM_QUEUE_SOFT_CHUNKS, MAX_STREAM_QUEUE_CHUNKS, MAX_TOTAL_QUEUE_CHUNKS, MAX_RECORDS,
   WS_HIGH_WATER, WS_HARD_LIMIT, MAX_CONTROL_QUEUE_BYTES,
-  selectTransport, getTransportVersion, receiveControl, decodeDataFrame, writeFrame, discardFrame,
+  selectTransport, getTransportVersion, supportsTcpResetAck, receiveControl, decodeDataFrame, writeFrame, discardFrame,
   sendData, sendControl, cancelStream, disposeTransport, getTransportStats,
 };

@@ -3,7 +3,7 @@ const { validateHeaderName, validateHeaderValue } = require('node:http');
 const crypto = require('node:crypto');
 const { redactLogUrl } = require('./security');
 const { MSG, FRAME_RESPONSE_BODY, FRAME_TCP_DATA, PROTOCOL_VERSION, DATA_TRANSPORT_VERSION, TCP_END,
-  selectTransport, getTransportVersion, receiveControl, decodeDataFrame, sendControl, sendData, writeFrame, discardFrame, cancelStream } = require('../shared/tunnel-v4');
+  selectTransport, getTransportVersion, supportsTcpResetAck, receiveControl, decodeDataFrame, sendControl, sendData, writeFrame, discardFrame, cancelStream } = require('../shared/tunnel-v4');
 const { generate, RESERVED } = require('./subdomain');
 const { getClientMapping, getClientMappingByAssignedHost, isSubdomainTaken, saveMapping, touchClient, logRequest } = require('./db');
 const { openPort, closePort } = require('./firewall');
@@ -178,7 +178,8 @@ class TunnelManager {
           sendControl(ws, {type: MSG.TUNNEL_ERROR, message: 'Reconnect to change the data transport.'});
           return;
         }
-        if (selectedVersion === DATA_TRANSPORT_VERSION) selectTransport(ws, selectedVersion, {isServer: true});
+        if (selectedVersion === DATA_TRANSPORT_VERSION) selectTransport(ws, selectedVersion, {isServer: true,
+          tcpResetAck: msg.tcpResetAck === true});
         if (currentTunnelKey) {
           this._removeTunnel(currentTunnelKey);
           setTunnelKey(null);
@@ -368,6 +369,7 @@ class TunnelManager {
     const assigned = sendControl(ws, {
       type: MSG.TUNNEL_ASSIGNED,
       dataTransportVersion: tunnel.dataTransportVersion,
+      tcpResetAck: supportsTcpResetAck(ws),
       tunnelType: 'http',
       subdomain: assignment.label,
       publicHost: assignment.publicHost,
@@ -449,6 +451,7 @@ class TunnelManager {
     const assigned = sendControl(ws, {
       type: MSG.TUNNEL_ASSIGNED,
       dataTransportVersion: tunnel.dataTransportVersion,
+      tcpResetAck: supportsTcpResetAck(ws),
       tunnelType: 'tcp',
       subdomain: label,
       publicHost: normalizeDomain(domainChoice.domain),
@@ -896,9 +899,12 @@ class TunnelManager {
         return;
       }
       const connId = crypto.randomUUID();
+      let socketError = null;
+      let closeReason = null;
+      const connectedAt = Date.now();
       tunnel.tcpConnections.set(connId, sock);
       tunnel.stats.connections++;
-      if (this.tcpIdleTimeoutMs) sock.setTimeout(this.tcpIdleTimeoutMs, () => sock.destroy());
+      if (this.tcpIdleTimeoutMs) sock.setTimeout(this.tcpIdleTimeoutMs, () => { closeReason = 'configured idle timeout'; sock.destroy(); });
       sock.setNoDelay?.(true);
       sock.setKeepAlive?.(true, 30000);
 
@@ -911,7 +917,7 @@ class TunnelManager {
       sock.on('data', (chunk) => {
         tunnel.stats.bytesIn += chunk.length;
         if (ws.readyState === ws.OPEN) {
-          if (!sendData(ws, FRAME_TCP_DATA, connId, chunk, sock)) sock.destroy();
+          if (!sendData(ws, FRAME_TCP_DATA, connId, chunk, sock)) { closeReason = 'tunnel stream write rejected'; sock.destroy(); }
         }
       });
 
@@ -921,13 +927,15 @@ class TunnelManager {
 
       sock.on('close', (hadError) => {
         tunnel.tcpConnections.delete(connId);
+        const reason = socketError || closeReason || (sock._tunnelRemoteReset ? 'client reset' : ws.readyState !== ws.OPEN ? 'tunnel disconnected' : hadError ? 'socket error' : 'visitor closed');
+        console.log(`[TCP] ${new Date().toISOString()} ${connId} closed: ${reason}; read=${sock.bytesRead || 0} written=${sock.bytesWritten || 0} eof=${Boolean(sock.readableEnded)} finished=${Boolean(sock.writableFinished)} duration=${Date.now() - connectedAt}ms`);
         if (!sock._tunnelRemoteReset && (hadError || !modern || !sock.readableEnded || !sock.writableFinished)
           && ws.readyState === ws.OPEN) {
           sendControl(ws, { type: MSG.TCP_CLOSE, connId });
         }
       });
 
-      sock.on('error', () => sock.destroy());
+      sock.on('error', (error) => { socketError = error.code || 'socket error'; sock.destroy(); });
     });
 
     tunnel.tcpServer = server;

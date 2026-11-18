@@ -161,6 +161,8 @@ async function connectTunnel(t, servicePort, serverPort, options = {}) {
 function assertSelected(tunnel, version) {
   assert.equal(tunnel.assignment.dataTransportVersion, version, 'The assignment callback exposes the negotiated data transport');
   assert.equal(tunnel.client.dataTransportVersion, version, 'The running client uses the negotiated data transport');
+  assert.equal(tunnel.assignment.tcpResetAck, version === 4 && tunnel.client.tcpResetAck,
+    'Actual gateway negotiation enables reset barriers only when both endpoints support them');
 }
 
 function publicRequest(t, gatewayInfo, assignment, route, body, extra = {}) {
@@ -411,6 +413,7 @@ test('a default client advertises v4 and falls back when an old server omits the
         if (message.type === MSG.TUNNEL_OPEN) {
           assert.equal(message.protocolVersion, PROTOCOL_VERSION);
           assert.ok(message.dataTransportVersions.includes(4), 'Default negotiation offers the v4 data transport');
+          assert.equal(message.tcpResetAck,true);
           opened.resolve(message);
           socket.send(JSON.stringify({
             type: MSG.TUNNEL_ASSIGNED, tunnelType: 'http',
@@ -474,6 +477,7 @@ test('an established v4 connection rejects a second assignment that tries to sel
   peer.send(JSON.stringify({type:MSG.TUNNEL_ASSIGNED,tunnelType:'http',url:'http://stale.apps.example.test'}));
   assert.equal((await deadline(closed,'Client accepted a transport downgrade'))[0],1002);
   assert.equal(tunnel.client.dataTransportVersion,4);
+  assert.equal(require('../shared/tunnel-v4').supportsTcpResetAck(tunnel.client.ws),false,'A v4 server that omits the capability still uses the old wire protocol');
   assert.equal(tunnel.client.shouldReconnect,false);
   assert.match(tunnel.errors.at(-1).message,/unsupported data transport/i);
 });

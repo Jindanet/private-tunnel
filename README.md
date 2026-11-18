@@ -12,7 +12,7 @@ The desktop app handles everyday sharing. The CLI handles terminals, servers and
 
 The CLI accepts both `ptunnel` and the short name `ptn`, including `ptn http 80`. Run `npm link --ignore-scripts` from the checkout to register both commands. They share the same saved profile.
 
-Version **1.4.4** restores the live terminal dashboard and fixes CMD finding the checkout's JavaScript file before the npm-linked command. Narrow terminals and `--plain` keep line-by-line logs. [Terminal previews and commands](docs/en/cli.md). The Windows boot-service fixes from 1.4.3 remain included; reinstall boot jobs after updating their client because they use a separate runtime copy. Other RDP disconnects still require connection logs. Device support remains **experimental**; physical board, TLS peak heap and continuous Wi-Fi tests still require real hardware.
+Version **1.4.5** fixes a TCP cancellation race that could close other connections on the same tunnel, and adds matching client/server close diagnostics. Update both endpoints and reinstall boot jobs to enable the negotiated fix. [TCP and RDP troubleshooting](docs/en/troubleshooting.md#remote-desktop). The live terminal dashboard, `ptn` alias and Windows boot-service fixes remain included. [Terminal previews and commands](docs/en/cli.md). This fixes a reproduced transport defect; other RDP disconnects still require connection logs. Device support remains **experimental**; physical board, TLS peak heap and continuous Wi-Fi tests still require real hardware.
 
 | Client | Platforms | Services |
 | --- | --- | --- |

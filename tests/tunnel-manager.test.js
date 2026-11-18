@@ -301,6 +301,19 @@ test('v4 negotiation is explicit, idempotent and cannot downgrade an active WebS
   ws.close();
 });
 
+test('TCP reset barriers are negotiated only for clients that explicitly offer them',async()=>{
+  for(const offered of [undefined,false,true]) {
+    const {manager}=fixture();
+    const ws=socket();
+    manager.handleNewClient(ws,'127.0.0.1');
+    ws.control({type:MSG.TUNNEL_OPEN,protocolVersion:1,dataTransportVersions:[4],tcpResetAck:offered});
+    await flush();
+    assert.equal(ws.messages.at(-1).tcpResetAck,offered===true);
+    assert.equal(require('../shared/tunnel-v4').supportsTcpResetAck(ws),offered===true);
+    ws.close();
+  }
+});
+
 test('modern publication waits for assignment while response headers retain wire order', async () => {
   const save = deferred();
   const { manager } = fixture({db:{saveMapping:()=>save.promise}});

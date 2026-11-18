@@ -106,6 +106,7 @@ function createStartupManager({ configPath, channel = 'cli', platform = process.
       return { ...entry, ...info, status: fresh || state?.status === 'error' ? state.status : 'stopped', url: fresh ? String(state.url || '') : '',
         error: error || state?.error || null, installed: fs.existsSync(info.profilePath),
         workerVersion: state?.version || null, dataTransportVersion: state?.dataTransportVersion || null,
+        tcpResetAck: state?.tcpResetAck === true,
         lastStatus: state?.status || null, updatedAt: state?.updatedAt || null };
     });
   }
